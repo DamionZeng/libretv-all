@@ -7,6 +7,8 @@ import android.graphics.Outline;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
+import android.graphics.drawable.Drawable;
+import android.graphics.drawable.LayerDrawable;
 import android.content.res.ColorStateList;
 import android.text.Html;
 import android.view.inputmethod.EditorInfo;
@@ -61,7 +63,7 @@ public final class MainActivity extends Activity {
     private LinearLayout root, content;
     private TextView message;
     private NasClient client;
-    private JSONArray sources = new JSONArray(), results = new JSONArray(), episodes = new JSONArray();
+    private JSONArray sources = new JSONArray(), results = new JSONArray(), episodes = new JSONArray(), episodeNames = new JSONArray();
     private JSONObject selected;
     private JSONObject detailInfo = new JSONObject();
     private final PosterLoader posters = new PosterLoader();
@@ -90,11 +92,21 @@ public final class MainActivity extends Activity {
     private PlayerView playerView;
     private TextView playbackStatus;
     private LinearLayout playerTop, playerControls;
-    private Button playToggle, subtitleButton, speedButton;
-    private TextView seekPreview;
-    private int tvSeekKey=KeyEvent.KEYCODE_UNKNOWN;
-    private long lastTvSeekEvent;
+    private Button subtitleButton, speedButton, episodesButton;
+    private LinearLayout episodePanel;
+    private RecyclerView episodePanelList;
+    private TextView seekPreview, episodeHint;
+    private ImageView pauseIcon;
+    private int tvSeekKey=KeyEvent.KEYCODE_UNKNOWN, episodeHintKey=KeyEvent.KEYCODE_UNKNOWN;
+    private long lastTvSeekEvent, episodeHintTime;
+    private int episodeFocusTries;
     private final Runnable clearSeekPreview=()->{if(seekPreview!=null)seekPreview.setVisibility(View.GONE);};
+    private final Runnable hideEpisodeHint=()->{
+        TextView hint=episodeHint;
+        if(hint==null)return;
+        hint.animate().cancel();
+        hint.animate().alpha(0f).setDuration(260).withEndAction(()->hint.setVisibility(View.GONE));
+    };
     private SubtitleMenu subtitleMenu;
     private SegmentSkipController segmentSkip;
     private android.app.AlertDialog playerOptions;
@@ -105,7 +117,7 @@ public final class MainActivity extends Activity {
     private ProgressBar playbackProgress;
     private boolean controlsVisible, playerHasFrame;
     private final Runnable hidePlayerControls = () -> {
-        if (screen == Screen.PLAYER && player != null && player.isPlaying() && (subtitleMenu == null || !subtitleMenu.isShowing()) && (playerOptions == null || !playerOptions.isShowing()) && (segmentSkip == null || !segmentSkip.isCountingDown())) hideControls();
+        if (screen == Screen.PLAYER && player != null && !episodePanelVisible() && player.isPlaying() && (subtitleMenu == null || !subtitleMenu.isShowing()) && (playerOptions == null || !playerOptions.isShowing()) && (segmentSkip == null || !segmentSkip.isCountingDown())) hideControls();
     };
     private long position;
     private boolean playWhenReady = true;
@@ -116,8 +128,6 @@ public final class MainActivity extends Activity {
                 playbackStatus.setText(state + "   " + time(player.getCurrentPosition()) + " / " + time(player.getDuration()));
                 long duration = player.getDuration();
                 playbackProgress.setProgress(duration > 0 ? (int) (player.getCurrentPosition() * 1000 / duration) : 0);
-                playToggle.setText(player.getPlayWhenReady() ? "暂停" : "播放");playToggle.setContentDescription(playToggle.getText());
-                PlayerStyle.setTvIcon(playToggle,player.getPlayWhenReady()?"pause":"play",22);
                 if(SystemClock.elapsedRealtime()-lastProgressSave>=5000) { saveTvProgress(); lastProgressSave=SystemClock.elapsedRealtime(); }
                 main.postDelayed(this, 1000);
             }
@@ -1015,6 +1025,8 @@ public final class MainActivity extends Activity {
             detailFromHome=fromHome;
             episodes = detail.optJSONArray("episodes");
             if (episodes == null || episodes.length() == 0) throw new Exception("此来源没有可播放集数");
+            episodeNames = detail.optJSONArray("episodeNames");
+            if (episodeNames == null) episodeNames = new JSONArray();
             JSONObject info = detail.optJSONObject("videoInfo");
             detailInfo = info == null ? new JSONObject() : info;
             title = info == null ? item.optString("name") : info.optString("title", item.optString("name"));
@@ -1024,6 +1036,11 @@ public final class MainActivity extends Activity {
             showDetail();
             if(continuePlaying)preparePlayback(episodeIndex);
         });
+    }
+    /** 综艺等来源在播放串里带有日期式集名，优先显示该名称，缺失时回退到集数。 */
+    private String episodeLabel(int index) {
+        String name = episodeNames == null ? "" : episodeNames.optString(index, "").trim();
+        return name.isEmpty() ? "第 " + (index + 1) + " 集" : name;
     }
     @SuppressWarnings("deprecation")
     private void showDetail() {
@@ -1126,10 +1143,13 @@ public final class MainActivity extends Activity {
         for (int i = 0; i < episodes.length(); i++) {
             int index = i;
             boolean current = i == resumeIndex;
+            String epLabel = episodeLabel(i);
             Button episode = new Button(this);
-            episode.setText(current ? "第 " + (i + 1) + " 集 · 继续" : "第 " + (i + 1) + " 集");
-            episode.setTextSize(15); episode.setAllCaps(false); episode.setGravity(Gravity.CENTER);
-            episode.setContentDescription("第 " + (i + 1) + " 集");
+            episode.setText(current ? epLabel + " · 继续" : epLabel);
+            episode.setTextSize(epLabel.length() > 8 ? 12 : 15); episode.setAllCaps(false); episode.setGravity(Gravity.CENTER);
+            episode.setSingleLine(true); episode.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            episode.setPadding(dp(4), 0, dp(4), 0);
+            episode.setContentDescription(epLabel);
             episode.setFocusableInTouchMode(true);
             episode.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}}, new int[]{SACCENT, current ? SACCENT : STEXT_2}));
             episode.setBackground(episodeState(current));
@@ -1297,6 +1317,8 @@ public final class MainActivity extends Activity {
         task("正在切换视频来源", () -> active.request(path, null), detail -> {
             episodes = detail.optJSONArray("episodes");
             if (episodes == null || episodes.length() == 0) throw new Exception("该来源没有可播放集数");
+            episodeNames = detail.optJSONArray("episodeNames");
+            if (episodeNames == null) episodeNames = new JSONArray();
             selected = item; detailSource = target;
             JSONObject info = detail.optJSONObject("videoInfo");
             detailInfo = info == null ? new JSONObject() : info;
@@ -1331,7 +1353,7 @@ public final class MainActivity extends Activity {
         playerTop = new LinearLayout(this); playerTop.setOrientation(LinearLayout.VERTICAL);
         playerTop.setPadding(dp(40), dp(20), dp(40), dp(34)); playerTop.setBackgroundResource(R.drawable.player_top);
         LinearLayout heading=row();playerTop.addView(heading);
-        TextView headingTitle=label(title + "   ·   第 " + (episodeIndex + 1) + " 集 / 共 "+episodes.length()+" 集",26);
+        TextView headingTitle=label(title + "   ·   " + episodeLabel(episodeIndex) + " / 共 "+episodes.length()+" 集",26);
         headingTitle.setTextColor(PlayerStyle.TEXT);
         heading.addView(headingTitle,new LinearLayout.LayoutParams(0,-2,1));
         message = label("正在连接…", 15); playerTop.addView(message);
@@ -1344,37 +1366,120 @@ public final class MainActivity extends Activity {
         LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(5)); progressParams.setMargins(dp(5), dp(4), dp(5), dp(8));
         playerControls.addView(playbackProgress, progressParams);
         LinearLayout controls = new LinearLayout(this);playerControls.addView(controls);
-        playToggle = playerAction(controls, "暂停", "pause", () -> {togglePlay();showControls(false);});
-        playerAction(controls,"快退 10秒","key-left",()->seekWithPreview(-10000));
-        playerAction(controls,"快进 10秒","key-right",()->seekWithPreview(10000));
-        Button previous=playerAction(controls,"上一集","previous",()->switchTvEpisode(episodeIndex-1));previous.setEnabled(episodeIndex>0);
-        Button next=playerAction(controls,"下一集","next",()->switchTvEpisode(episodeIndex+1));next.setEnabled(episodeIndex+1<episodes.length());
-        LinearLayout settings = new LinearLayout(this);playerControls.addView(settings);
-        speedButton=playerAction(settings,"倍速 "+tvPlaybackSpeed()+"×","speed",this::chooseTvSpeed);
-        subtitleButton=playerAction(settings,"字幕","subtitle",()->{if(subtitleMenu!=null){main.removeCallbacks(hidePlayerControls);subtitleMenu.show();}});
-        playerAction(settings,"更多","more",this::showPlayerOptions);
-        playerAction(settings,"返回选集","episodes",this::leavePlayer);
+        episodesButton=playerAction(controls,"选集","episodes",this::openEpisodePanel);
+        speedButton=playerAction(controls,"倍速 "+tvPlaybackSpeed()+"×","speed",this::chooseTvSpeed);
+        subtitleButton=playerAction(controls,"字幕","subtitle",()->{if(subtitleMenu!=null){main.removeCallbacks(hidePlayerControls);subtitleMenu.show();}});
+        playerAction(controls,"更多","more",this::showPlayerOptions);
         autoNext=new CheckBox(this);autoNext.setText("自动下一集");autoNext.setTextColor(PlayerStyle.TEXT);
         autoNext.setButtonTintList(ColorStateList.valueOf(PlayerStyle.ACCENT));
         autoNext.setChecked(getPreferences(MODE_PRIVATE).getBoolean("autoNext",true));
         autoNext.setOnCheckedChangeListener((v,on)->getPreferences(MODE_PRIVATE).edit().putBoolean("autoNext",on).apply());
         segmentSkip = new SegmentSkipController(this, title, () -> {showControls(false); main.removeCallbacks(hidePlayerControls);}, () -> showControls(false), this::finishSkippedTvEpisode);
         segmentSkip.addControls(playerControls, true);
-        TextView hint=label("收起时：左右快退 / 快进，长按加速 · 上下唤出 · 返回收起",13);hint.setTextColor(PlayerStyle.MUTED);hint.setGravity(Gravity.CENTER);hint.setPadding(0,dp(8),0,0);playerControls.addView(hint);
+        TextView hint=label("收起时：左右快退 / 快进，长按加速 · 双击上下切换集数 · 菜单键唤出操作层",13);hint.setTextColor(PlayerStyle.MUTED);hint.setGravity(Gravity.CENTER);hint.setPadding(0,dp(8),0,0);playerControls.addView(hint);
         stage.addView(playerControls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+        // 右侧选集悬浮框：打开时隐藏底部操作层，直接在这里切换集数。
+        LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setBackground(PlayerStyle.surface(0xf216181b,18,this));panel.setPadding(dp(20),dp(18),dp(20),dp(14));
+        panel.setVisibility(View.GONE);
+        LinearLayout panelHeader=row();
+        TextView panelTitle=label("选集",24);panelTitle.setTextColor(PlayerStyle.TEXT);
+        panelTitle.setTypeface(android.graphics.Typeface.create("sans-serif-medium",android.graphics.Typeface.NORMAL));
+        panelHeader.addView(panelTitle,new LinearLayout.LayoutParams(0,-2,1));
+        TextView panelCount=label("共 "+episodes.length()+" 集",13);panelCount.setTextColor(PlayerStyle.MUTED);
+        panelHeader.addView(panelCount);panel.addView(panelHeader);
+        episodePanelList=new RecyclerView(this);episodePanelList.setFocusable(false);episodePanelList.setClipToPadding(false);
+        episodePanelList.setPadding(dp(2),dp(10),dp(2),dp(8));episodePanelList.setItemAnimator(null);
+        episodePanelList.setLayoutManager(new GridLayoutManager(this,1));
+        episodePanelList.setAdapter(new RecyclerView.Adapter<EpisodeHolder>(){
+            @Override public EpisodeHolder onCreateViewHolder(ViewGroup parent,int type){
+                Button chip=new Button(MainActivity.this);chip.setAllCaps(false);chip.setGravity(Gravity.CENTER);
+                chip.setSingleLine(true);chip.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                chip.setMinWidth(0);chip.setMinimumWidth(0);chip.setMinHeight(0);chip.setMinimumHeight(0);
+                chip.setPadding(dp(8),0,dp(8),0);chip.setFocusableInTouchMode(true);
+                RecyclerView.LayoutParams params=new RecyclerView.LayoutParams(-1,dp(48));params.setMargins(dp(4),dp(3),dp(4),dp(3));
+                chip.setLayoutParams(params);return new EpisodeHolder(chip);
+            }
+            @Override public void onBindViewHolder(EpisodeHolder holder,int position){
+                Button chip=holder.chip;String text=episodeLabel(position);boolean current=position==episodeIndex;
+                chip.setText(text);chip.setContentDescription(text);chip.setTextSize(15);
+                chip.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{}},
+                        new int[]{PlayerStyle.ACCENT,current?PlayerStyle.ACCENT:PlayerStyle.TEXT}));
+                chip.setBackground(episodeState(current));
+                chip.setOnClickListener(v->{
+                    int index=holder.getBindingAdapterPosition();
+                    if(index==RecyclerView.NO_POSITION||busy)return;
+                    if(index==episodeIndex)closeEpisodePanel();else switchTvEpisode(index);
+                });
+                chip.setOnKeyListener((v,key,event)->{
+                    if(event.getAction()!=KeyEvent.ACTION_DOWN||key!=KeyEvent.KEYCODE_DPAD_LEFT)return false;
+                    if(holder.getBindingAdapterPosition()!=RecyclerView.NO_POSITION){closeEpisodePanel();return true;}
+                    return false;
+                });
+            }
+            @Override public int getItemCount(){return episodes.length();}
+        });
+        panel.addView(episodePanelList,new LinearLayout.LayoutParams(-1,0,1));
+        FrameLayout.LayoutParams panelParams=new FrameLayout.LayoutParams(dp(430),-1,Gravity.END);
+        panelParams.setMargins(0,dp(86),dp(24),dp(26));
+        episodePanel=panel;stage.addView(panel,panelParams);
+        pauseIcon=new ImageView(this);
+        GradientDrawable pauseCircle=new GradientDrawable();pauseCircle.setShape(GradientDrawable.OVAL);pauseCircle.setColor(0x40ffffff);
+        LayerDrawable pauseDrawable=new LayerDrawable(new Drawable[]{pauseCircle,new PlayerStyle.Icon("play")});
+        int pauseInset=dp(23);pauseDrawable.setLayerInset(1,pauseInset,pauseInset,pauseInset,pauseInset);
+        pauseIcon.setImageDrawable(pauseDrawable);
+        pauseIcon.setVisibility(View.GONE);
+        stage.addView(pauseIcon,new FrameLayout.LayoutParams(dp(84),dp(84),Gravity.CENTER));
         seekPreview=label("",20);seekPreview.setGravity(Gravity.CENTER);seekPreview.setPadding(dp(24),dp(12),dp(24),dp(12));
         seekPreview.setBackground(PlayerStyle.surface(0xcc0e0f11,12,this));seekPreview.setVisibility(View.GONE);
         stage.addView(seekPreview,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
-        setContentView(stage); controlsVisible = true;
+        episodeHint=label("",17);episodeHint.setGravity(Gravity.CENTER);episodeHint.setTextColor(PlayerStyle.TEXT);
+        episodeHint.setLineSpacing(dp(3),1f);episodeHint.setPadding(dp(22),dp(12),dp(22),dp(12));
+        episodeHint.setBackground(PlayerStyle.surface(0xcc0e0f11,12,this));episodeHint.setVisibility(View.GONE);
+        FrameLayout.LayoutParams hintParams=new FrameLayout.LayoutParams(-2,-2,Gravity.BOTTOM|Gravity.CENTER_HORIZONTAL);
+        hintParams.bottomMargin=dp(88);stage.addView(episodeHint,hintParams);
+        setContentView(stage); controlsVisible = false;
+        playerTop.setVisibility(View.GONE); playerControls.setVisibility(View.GONE);
         playerView.setOnClickListener(v -> { if (controlsVisible) hideControls(); else showControls(true); });
         playerView.setOnKeyListener((v, key, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-            if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) { togglePlay(); showControls(false); return true; }
+            if (key == KeyEvent.KEYCODE_DPAD_CENTER || key == KeyEvent.KEYCODE_ENTER) { togglePlay(); return true; }
             if (key == KeyEvent.KEYCODE_DPAD_LEFT || key == KeyEvent.KEYCODE_DPAD_RIGHT || key == KeyEvent.KEYCODE_DPAD_UP || key == KeyEvent.KEYCODE_DPAD_DOWN) { showControls(true); return true; }
             return false;
         });
         playerView.requestFocus();
         if (!stopped) startPlayer();
+    }
+    private static final class EpisodeHolder extends RecyclerView.ViewHolder {
+        final Button chip;
+        EpisodeHolder(Button chip) { super(chip); this.chip = chip; }
+    }
+    private boolean episodePanelVisible(){return episodePanel!=null&&episodePanel.getVisibility()==View.VISIBLE;}
+    /** 打开右侧选集面板：隐藏底部操作层，焦点落在当前播放集。 */
+    private void openEpisodePanel(){
+        if(screen!=Screen.PLAYER||episodePanel==null||episodePanelList==null)return;
+        main.removeCallbacks(hidePlayerControls);dismissEpisodeHint();
+        controlsVisible=false;playerControls.setVisibility(View.GONE);
+        episodePanel.animate().cancel();
+        episodePanel.setVisibility(View.VISIBLE);episodePanel.setAlpha(0f);episodePanel.setTranslationX(dp(40));
+        episodePanel.animate().alpha(1f).translationX(0f).setDuration(180);
+        episodePanelList.scrollToPosition(episodeIndex);
+        episodeFocusTries=0;episodePanelList.postDelayed(this::focusCurrentEpisode,80);
+    }
+    private void focusCurrentEpisode(){
+        if(!episodePanelVisible()||episodePanelList==null)return;
+        RecyclerView.ViewHolder holder=episodePanelList.findViewHolderForAdapterPosition(episodeIndex);
+        if(holder!=null){holder.itemView.requestFocus();return;}
+        if(episodeFocusTries++<6)episodePanelList.postDelayed(this::focusCurrentEpisode,60);
+    }
+    /** 收起选集面板并恢复底部操作层，焦点回到「选集」按钮。 */
+    private void closeEpisodePanel(){
+        if(!episodePanelVisible())return;
+        LinearLayout panel=episodePanel;
+        main.removeCallbacks(hidePlayerControls);
+        panel.animate().cancel();
+        panel.animate().alpha(0f).translationX(dp(40)).setDuration(140).withEndAction(()->panel.setVisibility(View.GONE));
+        showControls(true);
     }
     private Button playerAction(LinearLayout row,String text,String icon,Runnable run){
         Button b=PlayerStyle.action(this,text,icon,true);b.setPadding(dp(8),dp(6),dp(8),dp(6));b.setTextSize(16);PlayerStyle.setTvIcon(b,icon,22);LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(0,dp(48),1);p.setMargins(dp(4),dp(4),dp(4),dp(4));row.addView(b,p);
@@ -1403,11 +1508,32 @@ public final class MainActivity extends Activity {
             if(which==0&&player!=null){player.seekTo(0);player.play();saveTvProgress();}else if(which==1)autoNext.setChecked(!autoNext.isChecked());
         }).setOnDismissListener(d->{if(screen==Screen.PLAYER)showControls(true);}).show();
     }
+    /** 收起时单击上下键：渐入提示双击切换集数，随后自动渐出。 */
+    private void showEpisodeHint(int key){
+        if(episodeHint==null)return;
+        main.removeCallbacks(hideEpisodeHint);
+        int target=key==KeyEvent.KEYCODE_DPAD_UP?episodeIndex-1:episodeIndex+1;
+        if(target<0||target>=episodes.length())episodeHint.setText(key==KeyEvent.KEYCODE_DPAD_UP?"已经是第一集":"已经是最后一集");
+        else {
+            String name=episodeNames==null?"":episodeNames.optString(target,"").trim();
+            String action="双击 "+(key==KeyEvent.KEYCODE_DPAD_UP?"↑":"↓")+" 播放第 "+(target+1)+" 集";
+            episodeHint.setText(name.isEmpty()?action:action+"\n"+name);
+        }
+        episodeHint.animate().cancel();
+        episodeHint.setVisibility(View.VISIBLE);episodeHint.setAlpha(0f);
+        episodeHint.animate().alpha(1f).setDuration(160);
+        main.postDelayed(hideEpisodeHint,1600);
+    }
+    private void dismissEpisodeHint(){
+        main.removeCallbacks(hideEpisodeHint);episodeHintKey=KeyEvent.KEYCODE_UNKNOWN;
+        if(episodeHint!=null){episodeHint.animate().cancel();episodeHint.setVisibility(View.GONE);}
+    }
     private void showControls(boolean focus) {
         if (screen != Screen.PLAYER) return;
+        dismissEpisodeHint();
         controlsVisible = true; playerTop.setVisibility(View.VISIBLE); playerControls.setVisibility(View.VISIBLE);
         setSubtitleInset(true);
-        if (focus) playToggle.requestFocus();
+        if (focus && episodesButton != null) episodesButton.requestFocus();
         main.removeCallbacks(hidePlayerControls); main.postDelayed(hidePlayerControls, 3500);
     }
     private void hideControls() {
@@ -1456,13 +1582,15 @@ public final class MainActivity extends Activity {
                 playbackStatus.setText("播放已停止"); showControls(true); main.removeCallbacks(hidePlayerControls);
             }
             @Override public void onRenderedFirstFrame() {
-                if(!playerHasFrame){playerHasFrame = true;setNotice("左右快退 / 快进，长按加速 · 上下唤出操作 · 返回收起 / 选集");showControls(false);}
+                if(!playerHasFrame){playerHasFrame = true;setNotice("左右快退 / 快进，长按加速 · 双击上下切换集数 · 菜单键唤出操作层");}
             }
             @Override public void onIsPlayingChanged(boolean playing) {
+                syncPauseIcon();
                 if (playing) { main.removeCallbacks(hidePlayerControls); main.postDelayed(hidePlayerControls, 3500); }
             }
             @Override public void onPlaybackStateChanged(int state) {
                 if(subtitleMenu!=null)subtitleMenu.refresh();
+                syncPauseIcon();
                 if(state==Player.STATE_READY)try{new PlaybackStore(MainActivity.this).add(detailSource,selected,title);}catch(Exception ignored){}
                 if (state == Player.STATE_ENDED) {
                     saveTvProgress();
@@ -1478,7 +1606,18 @@ public final class MainActivity extends Activity {
         segmentSkip.bind(player);
         playerView.setKeepScreenOn(true); main.post(ticker);
     }
-    private void togglePlay() { if (player != null) { if (player.getPlayWhenReady()) player.pause(); else player.play(); } }
+    private void togglePlay() {
+        if (player == null) return;
+        if (player.getPlayWhenReady()) { player.pause(); if (controlsVisible) hideControls(); }
+        else player.play();
+        syncPauseIcon();
+    }
+    /** 暂停且操作层收起时，只在画面中间显示播放图标，不弹出底部操作层。 */
+    private void syncPauseIcon(){
+        if(pauseIcon==null||player==null)return;
+        boolean paused=player.getPlaybackState()==Player.STATE_READY&&!player.isPlaying();
+        pauseIcon.setVisibility(paused?View.VISIBLE:View.GONE);
+    }
     private void seek(long delta) {
         if (player == null || !player.isCurrentMediaItemSeekable()) return;
         long end = player.getDuration(); long next = Math.max(0, player.getCurrentPosition() + delta);
@@ -1497,6 +1636,7 @@ public final class MainActivity extends Activity {
     }
     private void releasePlayer() {
         if(segmentSkip!=null)segmentSkip.close();
+        dismissEpisodeHint();
         tvSeekKey=KeyEvent.KEYCODE_UNKNOWN;main.removeCallbacks(clearSeekPreview);if(seekPreview!=null)seekPreview.setVisibility(View.GONE);
         if(playerOptions!=null){playerOptions.dismiss();playerOptions=null;}
         if(subtitleMenu!=null) { subtitleMenu.close();subtitleMenu=null; }
@@ -1510,7 +1650,24 @@ public final class MainActivity extends Activity {
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if(screen==Screen.PLAYER && player!=null){
             int key=event.getKeyCode();
+            // 选集面板打开时，方向键与确认键交给面板内的焦点导航，菜单键不响应。
+            if(episodePanelVisible())return key==KeyEvent.KEYCODE_MENU ? true : super.dispatchKeyEvent(event);
             boolean horizontal=key==KeyEvent.KEYCODE_DPAD_LEFT||key==KeyEvent.KEYCODE_DPAD_RIGHT;
+            boolean vertical=key==KeyEvent.KEYCODE_DPAD_UP||key==KeyEvent.KEYCODE_DPAD_DOWN;
+            // 收起时上下键不再唤出操作层：单击提示，500ms 内再次按下切换上下集。
+            if(vertical && !controlsVisible){
+                if(event.getAction()==KeyEvent.ACTION_DOWN && event.getRepeatCount()==0){
+                    long now=event.getEventTime();
+                    int target=key==KeyEvent.KEYCODE_DPAD_UP?episodeIndex-1:episodeIndex+1;
+                    boolean again=episodeHintKey==key && now-episodeHintTime<=500;
+                    if(again && target>=0 && target<episodes.length()){
+                        dismissEpisodeHint();switchTvEpisode(target);
+                    }else{
+                        episodeHintKey=key;episodeHintTime=now;showEpisodeHint(key);
+                    }
+                }
+                return true;
+            }
             // Keep the entire hidden-control press (including key-up) out of focus navigation.
             if(horizontal && (tvSeekKey==key || !controlsVisible)){
                 if(event.getAction()==KeyEvent.ACTION_UP){tvSeekKey=KeyEvent.KEYCODE_UNKNOWN;return true;}
@@ -1529,9 +1686,9 @@ public final class MainActivity extends Activity {
                 if(direction && (!controlsVisible || !(getCurrentFocus() instanceof Button))) {showControls(true);return true;}
                 if(key==KeyEvent.KEYCODE_MENU){showControls(true);return true;}
                 if((key==KeyEvent.KEYCODE_DPAD_CENTER||key==KeyEvent.KEYCODE_ENTER)&&(!controlsVisible||getCurrentFocus()==playerView)){
-                    if(event.getRepeatCount()==0)togglePlay();showControls(true);return true;
+                    if(event.getRepeatCount()==0)togglePlay();return true;
                 }
-                if(key==KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE){if(event.getRepeatCount()==0)togglePlay();showControls(false);return true;}
+                if(key==KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE){if(event.getRepeatCount()==0)togglePlay();return true;}
                 if(key==KeyEvent.KEYCODE_MEDIA_PLAY){player.play();return true;}
                 if(key==KeyEvent.KEYCODE_MEDIA_PAUSE){player.pause();return true;}
             }
@@ -1543,7 +1700,7 @@ public final class MainActivity extends Activity {
         String destination=getIntent().getStringExtra("tvDestination");
         if((screen==Screen.PLAYLIST&&"playlist".equals(destination))||(screen==Screen.SETTINGS&&"settings".equals(destination))){finish();return;}
         switch (screen) {
-            case PLAYER: if (controlsVisible) hideControls(); else leavePlayer(); break;
+            case PLAYER: if(episodePanelVisible())closeEpisodePanel(); else if (controlsVisible) hideControls(); else leavePlayer(); break;
             case DETAIL: returnFromDetail(); break;
             case PLAYLIST: showSearch(); break;
             case SETTINGS: showSearch(); break;

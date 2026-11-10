@@ -214,26 +214,33 @@ final class LocalRepository {
             out.put(item);
         }
     }
-    static JSONArray episodes(String play) {
-        List<JSONArray> groups=new ArrayList<>();
-        for(String group:play.split("\\$\\$\\$")){
-            JSONArray eps=new JSONArray();for(String ep:group.split("#")){
-                int split=ep.indexOf('$');if(split<0)continue;String url=ep.substring(split+1).trim();
-                try{validate(url);eps.put(url);}catch(IOException ignored){}
-            }if(eps.length()>0)groups.add(eps);
-        }
-        for(JSONArray group:groups)for(int i=0;i<group.length();i++)if(group.optString(i).contains(".m3u8"))return group;
-        return groups.isEmpty()?new JSONArray():groups.get(0);
+    /** 播放串中的一个分组：集名（综艺常为日期）与地址一一对应。 */
+    private static final class EpisodeGroup {
+        final JSONArray names=new JSONArray(), urls=new JSONArray();
     }
+    private static EpisodeGroup episodeGroup(String play) {
+        List<EpisodeGroup> groups=new ArrayList<>();
+        for(String group:play.split("\\$\\$\\$")){
+            EpisodeGroup eps=new EpisodeGroup();for(String ep:group.split("#")){
+                int split=ep.indexOf('$');if(split<0)continue;
+                String name=ep.substring(0,split).trim(),url=ep.substring(split+1).trim();
+                try{validate(url);eps.urls.put(url);eps.names.put(name);}catch(Exception ignored){}
+            }if(eps.urls.length()>0)groups.add(eps);
+        }
+        for(EpisodeGroup group:groups)for(int i=0;i<group.urls.length();i++)if(group.urls.optString(i).contains(".m3u8"))return group;
+        return groups.isEmpty()?new EpisodeGroup():groups.get(0);
+    }
+    static JSONArray episodes(String play) { return episodeGroup(play).urls; }
     JSONObject detail(String id,JSONObject source)throws Exception{
         if(id==null || !id.matches("[\\w-]+"))throw new IOException("无效影片 ID");
-        JSONObject vod=null;JSONArray eps=new JSONArray();Exception failure=null;
+        JSONObject vod=null;EpisodeGroup parsed=new EpisodeGroup();Exception failure=null;
         try{JSONArray list=new JSONObject(fetch(api(source.getString("url"),"ids",id))).optJSONArray("list");
-            if(list!=null && list.length()>0){vod=list.getJSONObject(0);eps=episodes(vod.optString("vod_play_url"));}
+            if(list!=null && list.length()>0){vod=list.getJSONObject(0);parsed=episodeGroup(vod.optString("vod_play_url"));}
         }catch(Exception e){failure=e;}
+        JSONArray eps=parsed.urls;
         if(eps.length()==0 && !source.optString("detail").isEmpty()){
             try{
-                String html=fetch(source.getString("detail").replaceAll("/+$","")+"/index.php/vod/detail/id/"+id+".html");
+                String html=fetch(source.optString("detail").replaceAll("/+$","")+"/index.php/vod/detail/id/"+id+".html");
                 java.util.regex.Matcher m=java.util.regex.Pattern.compile("\\$(https?://[^\\\"'\\s]+?\\.m3u8(?:\\?[^\\\"'\\s<]*)?)").matcher(html);
                 Set<String> seen=new LinkedHashSet<>();while(m.find())if(seen.add(m.group(1)))eps.put(m.group(1));
             }catch(Exception e){failure=e;}
@@ -241,6 +248,6 @@ final class LocalRepository {
         if(eps.length()==0)throw new IOException(failure==null?"此来源未提供可播放剧集":failure.getMessage());
         JSONObject info=new JSONObject().put("sourceKey",source.getString("key")).put("sourceName",source.getString("name")).put("sourceUrl",source.getString("url"));
         if(vod!=null){String[][] fields={{"title","vod_name"},{"cover","vod_pic"},{"desc","vod_content"},{"year","vod_year"},{"area","vod_area"},{"remarks","vod_remarks"}};for(String[] f:fields)info.put(f[0],vod.optString(f[1]));}
-        return new JSONObject().put("episodes",eps).put("videoInfo",info);
+        return new JSONObject().put("episodes",eps).put("episodeNames",parsed.names).put("videoInfo",info);
     }
 }

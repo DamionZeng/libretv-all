@@ -20,11 +20,11 @@ final class VoiceSearch {
     static final String URL_STT = "https://api.siliconflow.cn/v1/audio/transcriptions";
     static final String URL_CHAT = "https://api.siliconflow.cn/v1/chat/completions";
     private static final String PREFS = "voice", KEY = "siliconflow";
-    private static final int MAX_MS = 9000, MIN_VOICE_MS = 600, TAIL_SILENCE_MS = 800;
+    private static final int MAX_MS = 9000, MIN_VOICE_MS = 400, TAIL_SILENCE_MS = 1300, VOICE_RMS = 500;
     /** 转写模型：Ultra 为主，Diarize 作为兜底。 */
     private static final String[] STT_MODELS = {"XingChenAGI/XingChenASR-V3.2-Ultra", "XingChenAGI/XingChenASR-Diarize-V3.0"};
-    /** 对话模型候选（Qwen3.5-4B 实测 0.6-0.75 秒；GLM-5.3-Flash 要 9 秒以上，不用）。 */
-    private static final String[] CHAT_MODELS = {"Qwen/Qwen3.5-4B", "Qwen/Qwen3-8B"};
+    /** 对话模型：固定使用 DeepSeek-V4.1-Flash，只请求一次，不做模型兜底。 */
+    private static final String CHAT_MODEL = "deepseek-ai/DeepSeek-V4.1-Flash";
 
     private VoiceSearch() {}
 
@@ -86,18 +86,20 @@ final class VoiceSearch {
         int peak() { return peak; }
 
         private void loop() {
-            int chunk = rate / 10;
+            int chunk = Math.max(rate / 10, 320);
             byte[] buffer = new byte[chunk];
-            int silence = 0, voiced = 0, elapsed = 0;
-            while (running.get() && elapsed < MAX_MS) {
+            int silence = 0, voiced = 0, total = 0;
+            while (running.get() && total * 1000L / (rate * 2) < MAX_MS) {
                 int read = record.read(buffer, 0, buffer.length);
                 if (read <= 0) break;
                 pcm.write(buffer, 0, read);
+                total += read;
+                // 时长按实际读到的采样数换算，不能按读取次数累加，否则会在真人还没说完时提前结束。
+                int chunkMs = Math.max(1, read * 1000 / (rate * 2));
                 int rms = rms(buffer, read);
                 if (rms > peak) peak = rms;
-                elapsed += 100;
-                if (rms > 600) { voiced += 100; silence = 0; }
-                else if (voiced > 0) silence += 100;
+                if (rms > VOICE_RMS) { voiced += chunkMs; silence = 0; }
+                else if (voiced > 0) silence += chunkMs;
                 if (voiced >= MIN_VOICE_MS && silence >= TAIL_SILENCE_MS) break;
             }
             running.set(false);
@@ -184,29 +186,33 @@ final class VoiceSearch {
         return text;
     }
 
-    /** 把口语整理成适合搜索框的关键词；大模型不可用时退回识别原文。 */
+    /** 把识别原文整体交给文本模型，由它纠正误识别并直接给出作品名称；仅请求一次，失败时退回识别原文。 */
     static String keyword(String transcript, String key) {
-        JSONArray messages = new JSONArray();
+        long start = System.currentTimeMillis();
         try {
+            JSONArray messages = new JSONArray();
             messages.put(new JSONObject().put("role", "system")
-                    .put("content", "你只输出一个影视搜索关键词，20 字以内，不要解释、不要引号、不要标点。"));
-            messages.put(new JSONObject().put("role", "user").put("content",
-                    "用户在电视上语音搜索影视，识别文字是：「" + transcript + "」。请提取最适合拿去影视搜索框的关键词："
-                            + "如果是具体作品名就只给作品名；如果是题材、演员、导演、地区等描述就给最贴近的短语。"));
-            for (String model : CHAT_MODELS) {
-                try {
-                    JSONObject payload = new JSONObject().put("model", model).put("temperature", 0)
-                            .put("max_tokens", 16).put("enable_thinking", false).put("messages", messages);
-                    JSONObject reply = post(URL_CHAT, key, "application/json",
-                            payload.toString().getBytes(StandardCharsets.UTF_8));
-                    JSONArray choices = reply.optJSONArray("choices");
-                    if (choices == null || choices.length() == 0) continue;
-                    String answer = choices.optJSONObject(0).optJSONObject("message").optString("content", "").trim();
-                    answer = answer.replaceAll("[\"'“”‘’《》\\[\\]]", "").replaceAll("\\s+", " ").trim();
-                    if (!answer.isEmpty() && answer.length() <= 40) return answer;
-                } catch (Exception ignored) { }
+                    .put("content", "你是电视影视搜索助手。用户用语音说出想看的内容，识别文字常有同音错别字。请把识别文字纠正为真实存在的影视作品名称，只输出该名称。"
+                            + "规则：1.优先输出与读音最接近的已知影视作品全名，例如把仓原图纠正为沧元图；"
+                            + "2.用户只给题材、演员、导演、角色、地区、剧情等线索时，输出最匹配的作品名称；"
+                            + "3.无法确定具体作品时，输出最贴近的搜索词。"
+                            + "只输出结果本身，不要解释、不要引号、不要标点，20 字以内。"));
+            messages.put(new JSONObject().put("role", "user").put("content", transcript));
+            JSONObject payload = new JSONObject().put("model", CHAT_MODEL).put("temperature", 0)
+                    .put("max_tokens", 24).put("enable_thinking", false).put("messages", messages);
+            // 语音搜索要求 5 秒内出结果，这里限制连接与读取耗时。
+            JSONObject reply = post(URL_CHAT, key, "application/json",
+                    payload.toString().getBytes(StandardCharsets.UTF_8), 2000, 3500);
+            JSONArray choices = reply.optJSONArray("choices");
+            if (choices != null && choices.length() > 0) {
+                String answer = choices.optJSONObject(0).optJSONObject("message").optString("content", "").trim();
+                answer = answer.replaceAll("[\"'“”‘’《》\\[\\]]", "").replaceAll("\\s+", " ").trim();
+                android.util.Log.d("VoiceSearch", "chat " + CHAT_MODEL + " " + (System.currentTimeMillis() - start) + "ms");
+                if (!answer.isEmpty() && answer.length() <= 40) return answer;
             }
-        } catch (JSONException ignored) { }
+        } catch (Exception e) {
+            android.util.Log.d("VoiceSearch", "chat failed: " + e.getMessage());
+        }
         return transcript;
     }
 
@@ -218,9 +224,13 @@ final class VoiceSearch {
     }
 
     private static JSONObject post(String endpoint, String key, String contentType, byte[] body) throws Exception {
+        return post(endpoint, key, contentType, body, 10000, 30000);
+    }
+
+    private static JSONObject post(String endpoint, String key, String contentType, byte[] body, int connectMs, int readMs) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(30000);
+        conn.setConnectTimeout(connectMs);
+        conn.setReadTimeout(readMs);
         conn.setRequestMethod("POST");
         conn.setDoOutput(true);
         conn.setRequestProperty("Authorization", "Bearer " + key);
