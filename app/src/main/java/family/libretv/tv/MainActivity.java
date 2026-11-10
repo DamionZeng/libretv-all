@@ -727,18 +727,32 @@ public final class MainActivity extends Activity {
         starlightChrome(false);
         LinearLayout nav = row(); content.addView(nav);
         starlightButton(nav, "‹ 返回设置", false, this::showSettings);
-        TextView hint = starlightText("电视麦克风录音后先用 SenseVoice 转成文字，再由大模型整理成搜索关键词，都走硅基流动的免费额度。"
-                + "在 cloud.siliconflow.cn 用手机号注册，左侧「API 密钥」创建后把 sk- 开头的 key 粘贴到这里。", 14, STEXT_2);
+        String savedKey = VoiceSearch.key(this);
+        TextView hint = starlightText("电视麦克风录音后先用语音识别模型转成文字，再由大模型整理成搜索关键词，都走硅基流动。"
+                + "在 cloud.siliconflow.cn 用手机号注册，左侧「API 密钥」创建后把 sk- 开头的 key 粘贴到这里。"
+                + (savedKey.isEmpty() ? "" : "\n已保存的 Key 只以掩码回显，界面上无法查看明文。"), 14, STEXT_2);
         hint.setPadding(dp(6), dp(8), dp(6), dp(6)); content.addView(hint);
-        EditText field = starlightInput(content, "硅基流动 API Key（sk-…）", VoiceSearch.key(this),
-                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        int keyType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
+        EditText field = starlightInput(content,
+                savedKey.isEmpty() ? "粘贴 sk- 开头的 API Key" : "已保存 " + VoiceSearch.masked(savedKey) + "，留空保持不变",
+                "", keyType);
+        // setSingleLine 会把 inputType 重置成普通文本，必须再设一次密码类型，否则已输入的 Key 会明文显示。
         field.setSingleLine(true);
+        field.setInputType(keyType);
+        field.setTransformationMethod(android.text.method.PasswordTransformationMethod.getInstance());
         LinearLayout.LayoutParams fieldParams = (LinearLayout.LayoutParams) field.getLayoutParams();
         fieldParams.height = dp(62); field.setLayoutParams(fieldParams);
         starlightPrimary(content, "保存", () -> {
             String value = field.getText().toString().trim();
-            if (value.isEmpty()) { setNotice("请填写 API Key"); return; }
+            if (value.isEmpty()) {
+                if (savedKey.isEmpty()) { setNotice("请填写 API Key"); return; }
+                hideKeyboard();
+                showSettings();
+                setNotice("未修改，继续使用已保存的 API Key");
+                return;
+            }
             VoiceSearch.saveKey(this, value);
+            field.setText("");
             hideKeyboard();
             showSettings();
             setNotice("语音搜索已启用");
@@ -795,7 +809,7 @@ public final class MainActivity extends Activity {
             ImageView mark=new ImageView(this);mark.setImageResource(R.drawable.spark_mark);
             panel.addView(mark,new LinearLayout.LayoutParams(dp(64),dp(64)));
             TextView slogan=starlightText(PiankeUi.SLOGAN,14,STEXT_3);slogan.setPadding(0,dp(10),0,dp(16));panel.addView(slogan);
-            settingRow(panel,"语音搜索",VoiceSearch.key(this).isEmpty()?"未配置 · 点此填写硅基流动 API Key":"SenseVoice 语音识别 · 已配置",this::showVoiceSettings);
+            settingRow(panel,"语音搜索",VoiceSearch.key(this).isEmpty()?"未配置 · 点此填写硅基流动 API Key":"语音识别已配置 · Key 已隐藏",this::showVoiceSettings);
             settingRow(panel,"检查更新",BuildConfig.VERSION_NAME,()->startActivity(new Intent(this,UpdateActivity.class)));
             settingRow(panel,"关于星光影院","原生影音客户端",()->PiankeUi.about(this));
         }

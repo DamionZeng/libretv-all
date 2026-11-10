@@ -183,15 +183,15 @@ git push origin main
 
 ## 语音搜索
 
-1. 到 [硅基流动](https://cloud.siliconflow.cn) 注册并创建 API Key（有免费额度）。
-2. 电视进入「设置 → 语音搜索」，填入 Key 保存。
+1. 到 [硅基流动](https://cloud.siliconflow.cn) 注册并创建 API Key（按量计费，价格以平台为准）。
+2. 电视进入「设置 → 语音搜索」，填入 Key 保存；已保存的 Key 只以掩码回显，界面无法查看明文。
 3. 在首页顶部点麦克风图标，或在搜索页确认默认选中的语音图标，直接说话即可。
 
 链路：录音 → 语音转文字 → 整理为影视关键词 → 自动填入并搜索。
 
 | 环节 | 主模型 | 兜底模型 |
 | --- | --- | --- |
-| 语音转文字 | `Qwen/Qwen3-ASR-1.7B` | `FunAudioLLM/SenseVoiceSmall` |
+| 语音转文字 | `XingChenAGI/XingChenASR-V3.2-Ultra` | `XingChenAGI/XingChenASR-Diarize-V3.0` |
 | 关键词整理 | `Qwen/Qwen3.5-4B` | `Qwen/Qwen3-8B` |
 
 麦克风权限为可选声明：没有麦克风的设备不影响其它功能，只是无法语音搜索。错误提示会区分 Key 无效（401）、地区限制（403）、额度或频率受限（429）与服务繁忙（503）。

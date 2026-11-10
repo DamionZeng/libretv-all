@@ -13,16 +13,16 @@ import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 语音搜索：电视麦克风录音 → SenseVoice 转写成文字 → 大模型整理成影视搜索关键词。
- * 都走硅基流动（国内可直连，语音转写免费），只需要在设置里填写一个 API Key。
+ * 语音搜索：电视麦克风录音 → 语音识别模型转写成文字 → 大模型整理成影视搜索关键词。
+ * 都走硅基流动（国内可直连），只需要在设置里填写一个 API Key。
  */
 final class VoiceSearch {
     static final String URL_STT = "https://api.siliconflow.cn/v1/audio/transcriptions";
     static final String URL_CHAT = "https://api.siliconflow.cn/v1/chat/completions";
     private static final String PREFS = "voice", KEY = "siliconflow";
     private static final int MAX_MS = 9000, MIN_VOICE_MS = 600, TAIL_SILENCE_MS = 800;
-    /** 转写模型：Qwen3-ASR 实测 0.4 秒，SenseVoiceSmall 免费但排队要 2~19 秒，只作兜底。 */
-    private static final String[] STT_MODELS = {"Qwen/Qwen3-ASR-1.7B", "FunAudioLLM/SenseVoiceSmall"};
+    /** 转写模型：Ultra 为主，Diarize 作为兜底。 */
+    private static final String[] STT_MODELS = {"XingChenAGI/XingChenASR-V3.2-Ultra", "XingChenAGI/XingChenASR-Diarize-V3.0"};
     /** 对话模型候选（Qwen3.5-4B 实测 0.6-0.75 秒；GLM-5.3-Flash 要 9 秒以上，不用）。 */
     private static final String[] CHAT_MODELS = {"Qwen/Qwen3.5-4B", "Qwen/Qwen3-8B"};
 
@@ -35,6 +35,12 @@ final class VoiceSearch {
 
     static void saveKey(Context context, String value) {
         prefs(context).edit().putString(KEY, value == null ? "" : value.trim()).apply();
+    }
+
+    /** 已保存 Key 的掩码文案，只用于界面回显，不提供查看明文的入口。 */
+    static String masked(String value) {
+        if (value == null || value.isEmpty()) return "";
+        return value.length() <= 4 ? "••••" : "••••••" + value.substring(value.length() - 4);
     }
 
     private static SharedPreferences prefs(Context context) {
@@ -172,7 +178,7 @@ final class VoiceSearch {
         body.writeBytes("\r\n--" + boundary + "--\r\n");
         body.flush();
         JSONObject reply = post(URL_STT, key, "multipart/form-data; boundary=" + boundary, bytes.toByteArray());
-        // SenseVoice 偶尔会带上 <|zh|><|NEUTRAL|> 之类的标记，转写结果统一去掉。
+        // 部分转写模型会带上 <|zh|><|NEUTRAL|> 之类的标记，结果统一去掉。
         String text = reply.optString("text", "").replaceAll("<\\|[^|]*\\|>", "").trim();
         if (text.isEmpty()) throw new Exception("没有听清，请再说一次");
         return text;
