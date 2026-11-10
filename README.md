@@ -1,107 +1,261 @@
-# 片刻
+# 星光影院
 
-[0.21.0 更新说明](docs/release-notes-0.21.0.md)：播放控制栏直接设置片头片尾，整剧记忆、换源沿用，片尾倒计时可取消。
+[![Build APK](https://github.com/DamionZeng/libretv-all/actions/workflows/android.yml/badge.svg?branch=main)](https://github.com/DamionZeng/libretv-all/actions/workflows/android.yml)
+[![License](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue)](LICENSE)
 
-> 留点片刻，看点喜欢的
+> 光落下，故事开始。
 
-<img src="docs/design/brand/pianke-liuguang.png" width="160" alt="片刻留光图标">
+适用于 Android 手机、平板、车机与电视的原生影音客户端。Java + Kotlin 编写，播放使用 Media3/ExoPlayer，投屏使用内置 UPnPCast，最低支持 Android 6.0（API 23）。不需要自建服务端：影视来源、搜索、历史、片单与播放进度全部保存在本机。
 
-适用于 Android 手机、平板、可安装普通 APK 的车机与电视的独立影音客户端，使用原生 Views、Media3 和 UPnPCast，最低 Android 6.0（API 23；0.16.4 起）。搜索、收藏、播放列表和播放进度保存在本机，不需要服务端。支持来源 JSON、文件、订阅及扫码导入，逐源动态搜索、选集、续播、手机横屏全屏和电视遥控操作。触摸端使用「首页、搜索、直播、历史、设置」五个入口：竖屏为底部导航，横屏为侧边导航；历史页可打开本机收藏夹与播放列表。
+本仓库不提供任何片源或订阅地址，请自行配置有权访问的 CMS 接口。
 
-本仓库不提供资源站列表或视频内容。请自行配置有权访问的来源。投屏及电视真机兼容性仍需按设备验收。
+![星光影院 TV 首页设计](docs/design/concepts/starlight-tv-home.jpg)
 
-## 名称与设计
+> 上图为设计概念图，实际界面以发行包为准。
 
-对外名称为「片刻」，意在给日常留一点看喜欢内容的时间。图标采用「留光」：一束光照亮一幅画面，代表留给喜欢内容的观看时间；0.19.1 起桌面及内部品牌图像统一使用该图标。GitHub / Gitee 仓库地址、更新地址及现有工程标识保持不变；`libretv-standalone` 为历史仓库名。
+## 目录
 
-设计以手机触摸和电视遥控两种使用方式为基础：深色背景、粉色强调，海报与内容优先，播放操作保持简洁。手机重视单手操作、竖屏浏览与横屏播放；电视重视远距离阅读、明确的焦点和方向键导航。直播频道分类与点播选集分别组织，避免混用频道和剧集概念。
+- [功能一览](#功能一览)
+- [下载](#下载)
+- [构建](#构建)
+- [GitHub Actions 自动构建](#github-actions-自动构建)
+- [语音搜索](#语音搜索)
+- [来源配置](#来源配置)
+- [数据与隐私](#数据与隐私)
+- [项目结构](#项目结构)
+- [文档](#文档)
+- [许可与声明](#许可与声明)
 
-当前开发源码已将历史、收藏与片单更新为海报与进度卡片，统一详情页的主要播放入口，并对设置、来源、更新和现有投屏入口分组；手机与 TV 使用各自的布局和操作方式。应用展示名为「片刻」，内部品牌展示统一使用「留光」图像。这些调整随 0.19.0 提供，已安装用户可沿用原来的检查更新入口升级。
+## 功能一览
 
-本项目是原生 Android 影音客户端，部分业务设计和解析逻辑参考 LibreTV；不是 LibreTV 官方发行版。更名不改变项目原有许可及第三方署名，详见下方许可说明和 [NOTICE.md](NOTICE.md)。
+**浏览与发现**
 
-0.20.0 起触摸端跟随系统方向，横屏采用侧边导航和双列内容；TV点播提供隐藏态左右定位、长按加速及直接倍速入口。扫码来源录入支持逐条填写、JSON文本和订阅地址三选一。完整改动见 [0.20.0 说明](docs/release-notes-0.20.0.md)。
+- 首页：全幅轮播推荐 + 按分类横排的聚合片库，卡片铺满整行，评分浮层在右下角，类别标签在右上角。
+- 片库：基于豆瓣分类接口的聚合片库，支持类型（电影 / 电视剧 / 综艺 / 动漫 / 纪录片 / 短剧）、年份筛选，按时间或评分倒序排列；滚动到底自动加载下一页，没有分页按钮。
+- 榜单：独立页面，入口位于顶部导航「榜单」，默认高分优先。
+- 片库与榜单只从豆瓣获取片名、年份、评分、类别与海报等展示元数据，不包含任何播放地址；点击条目后仍走本地 CMS 来源搜索，由已有播放链路解析。
 
-0.21.0 起，播放器外层提供「设置片头」「设置片尾」「自动跳过」按钮：播放到正片开始或片尾开始时点一下即可标记，按剧名在本机保存、同名剧换源沿用，季数和版本后缀分别记忆。片尾按剩余时长匹配各集，跳过前提供 5 秒取消入口；续播优先保留进度，主动拖回片头或片尾时允许观看。片尾跳过后遵循「自动下一集」设置，最后一集停止。详情和选集时可查看已保存的时长与开关状态；设置按整部剧保存在本机，未收藏或取消收藏也保留，不随单集进度覆盖。此功能需视频支持定位且提供有效总时长。
+**搜索**
 
-设计方案与页面卡片见 [片刻界面设计](docs/design/pianke.md)。
+- 多源并发搜索，结果边到边显示，可随时停止；单个来源超时或失效不影响其余来源。
+- 电视顶部导航提供搜索与语音两个图标入口，位于「榜单」之后；进入搜索页默认选中语音图标，按确认即可开口说话。
+- 搜索页保留关键词输入、搜索、语音与停止搜索，以及「我的片单」「设置」快捷入口。
 
-![片刻：观看历史设计](docs/design/images/pianke-history-v2.png)
+**语音搜索**
 
-![片刻：设置与来源设计](docs/design/images/pianke-settings-v2.png)
+- 电视麦克风录音（16 kHz 单声道），说完停顿约 800 ms 自动结束，最长 9 秒。
+- 语音转文字与关键词整理都走硅基流动，只需在设置中填写一个 API Key。
 
-以上为设计图，当前发行包界面以实际版本为准。
+**播放**
 
-## 投屏
+- Media3 ExoPlayer 播放，支持多线路换源、选集、续播、倍速与字幕。
+- 片头片尾按剧名保存在本机：播放器可一键标记片头 / 片尾，同名剧换源沿用，跳片尾前提供 5 秒取消入口，随后遵循「自动下一集」设置。
+- 手机手势：单击显示或隐藏控制栏；双击左侧 / 右侧后退 / 前进 10 秒；横向拖动预览目标进度，松手跳转；左侧上下滑动调亮度，右侧上下滑动调媒体音量。
+- 电视使用遥控器方向键：焦点高亮、确认播放、左右键快进快退、返回键逐级退出。
 
-手机已接入 UPnPCast：搜索局域网接收设备、发送 HTTP(S) 视频直链、播放/暂停/停止、调整进度和音量，以及保存投屏记录并尝试恢复控制。点播可选择剧集投屏，直播也有投屏入口。能否实际播放及支持哪些控制，取决于接收设备、网络和媒体格式。
+**片单与历史**
 
-当前由电视直接拉取媒体地址。需要额外请求头的直播线路在发送前会提示不支持；本机播放器可播不代表接收设备一定可播。批量加入列表只适用于支持相应行为的设备，不能将指令已接受等同于电视已完整保存列表。底层库提供本地文件投屏能力，但 App 尚未接入本地视频选择与投屏流程。
+- 观看历史与「我的片单」均在本机保存，包含海报、进度与来源；可清空历史或移出片单，操作不会删除来源配置。
 
-后续投屏扩展暂缓，候选范围记在 [投屏计划](docs/casting-plan.md)。
+**投屏（手机）**
+
+- 通过 UPnPCast 发现局域网接收设备，支持单集投屏、队列与批量投屏、播放/暂停/停止、进度与音量控制，并保存投屏记录。
+- 能否播放及支持哪些控制取决于接收设备、网络与媒体格式；需要额外请求头的线路会在发送前提示不支持。
+
+**来源与更新**
+
+- 支持粘贴 JSON / 订阅地址导入、手机扫码填写、局域网配对导入；来源可单独启用、停用或删除。
+- 启动后每天后台检查一次更新，也可手动「检查更新」；依次尝试 GitHub、Gitee 镜像与公共加速通道，下载后校验大小、SHA-256、包名、版本码与签名再交给系统安装。
+
+## 下载
+
+当前自动构建的安装包固定地址（debug 签名，可直接安装）：
+
+**https://github.com/DamionZeng/libretv-all/releases/download/latest/StarlightTV-latest.apk**
+
+- 发布页：<https://github.com/DamionZeng/libretv-all/releases/tag/latest>
+- 每次推送 `main` 都会覆盖这个预发布包；只保留最新一次。
+- 推送 `v*` 标签会额外生成正式 Release，附件名为 `StarlightTV-<标签>.apk`。
+- 也可以在 [Actions](https://github.com/DamionZeng/libretv-all/actions/workflows/android.yml) 页面下载每次运行对应的 artifact。
+
+> 公开构建使用空来源配置，安装后需要在「视频来源」里自行导入。截图、本地片源目录与签名文件都不会进入仓库。
 
 ## 构建
 
-需要 JDK 17、Android SDK 35、Build Tools 36.0.0。在 `local.properties` 设置 `sdk.dir`，然后运行：
+### 环境要求
 
-```sh
-./gradlew -PincludeLocalSources=false :app:assembleDebug :app:testDebugUnitTest :app:lintDebug
+| 项 | 要求 |
+| --- | --- |
+| JDK | 17 |
+| Gradle | 8.9（随仓库 wrapper 提供，无需单独安装） |
+| Android Gradle Plugin | 8.7.3 |
+| Kotlin | 1.9.24 |
+| Android SDK | Platform 35 与 Build Tools 36.0.0 |
+| compileSdk / targetSdk | 35 / 35 |
+| minSdk | 23 |
+
+### 构建命令
+
+在仓库根目录执行：
+
+```bash
+# 调试包（强制空来源，适合公开分发）
+./gradlew -PincludeLocalSources=false :app:assembleDebug
+
+# 单元测试与 Lint
+./gradlew -PincludeLocalSources=false :app:testDebugUnitTest :app:lintDebug
+
+# 仪器测试（请使用模拟器或测试机）
+./gradlew :app:connectedDebugAndroidTest
+
+# Release 包（需自行配置签名）
+./gradlew -PincludeLocalSources=false :app:assembleRelease
 ```
 
-此命令构建空来源版本，安装后可扫码或手动导入。固定依赖见 Gradle 锁文件。
+Windows PowerShell 把 `./gradlew` 换成 `.\gradlew.bat`，例如：
 
-## 本地默认来源
+```powershell
+.\gradlew.bat -PincludeLocalSources=false :app:assembleDebug
+```
 
-将 `config/default-sources.example.json` 复制为 `local/default-sources.json`，修改为自己的配置。`local/` 已被 Git 忽略。正常本地构建会将该文件生成至构建目录并打入 APK：
+`local.properties` 中需要 `sdk.dir` 指向 Android SDK。升级依赖时请同步更新 `app/gradle.lockfile` 与 `third-party/upnpcast/gradle.lockfile`，否则依赖锁定会导致构建失败。
 
-```sh
+### 产物位置
+
+| 类型 | 路径 |
+| --- | --- |
+| Debug APK | `app/build/outputs/apk/debug/app-debug.apk` |
+| Release APK | `app/build/outputs/apk/release/` |
+| 单元测试报告 | `app/build/reports/tests/testDebugUnitTest/` |
+| Lint 报告 | `app/build/reports/lint-results-debug.html` |
+| 默认来源资产 | `app/build/generated/sourceAssets/` |
+
+### Gradle 属性
+
+| 属性 | 默认值 | 作用 |
+| --- | --- | --- |
+| `includeLocalSources` | `true` | 是否把 `local/default-sources.json` 打包进 APK；公开构建必须设为 `false` |
+| `familyUpgrade` | `false` | 切换为旧包名 `family.libretv.tv`、版本名 `0.21.0-independent`，输出到 `app/build-family-upgrade` |
+| `appVersionCode` | `58` | 覆盖 versionCode |
+
+### 签名
+
+Release 包需要自行准备 keystore 并在本机配置签名；公开发布请沿用已有更新签名身份，并保证 minSdk 23 下启用 v1 签名。完整流程（清单生成、SHA-256、双通道验证）见 [发布文档](docs/releasing.md)。
+
+## GitHub Actions 自动构建
+
+工作流文件：[.github/workflows/android.yml](.github/workflows/android.yml)
+
+- 触发：推送到 `main`、推送 `v*` 标签、Pull Request、在 Actions 页面手动运行。
+- 环境：`ubuntu-latest` + Temurin JDK 17，使用运行器预装的 Android SDK 安装 Platform 35 与 Build Tools 36.0.0。
+- 构建：`./gradlew --no-daemon assembleDebug -PincludeLocalSources=false`。
+- 产物：上传 `StarlightTV-<短 SHA>.apk` artifact；`main` 分支同时更新 `latest` 预发布；`v*` 标签生成正式 Release。
+- 工作流需要 `contents: write` 权限以创建 Release，仓库默认 Token 即可，无需额外 Secrets。
+
+本地提交并推送即可触发：
+
+```bash
+git add -A
+git commit -m "你的改动"
+git push origin main
+```
+
+## 语音搜索
+
+1. 到 [硅基流动](https://cloud.siliconflow.cn) 注册并创建 API Key（有免费额度）。
+2. 电视进入「设置 → 语音搜索」，填入 Key 保存。
+3. 在首页顶部点麦克风图标，或在搜索页确认默认选中的语音图标，直接说话即可。
+
+链路：录音 → 语音转文字 → 整理为影视关键词 → 自动填入并搜索。
+
+| 环节 | 主模型 | 兜底模型 |
+| --- | --- | --- |
+| 语音转文字 | `Qwen/Qwen3-ASR-1.7B` | `FunAudioLLM/SenseVoiceSmall` |
+| 关键词整理 | `Qwen/Qwen3.5-4B` | `Qwen/Qwen3-8B` |
+
+麦克风权限为可选声明：没有麦克风的设备不影响其它功能，只是无法语音搜索。错误提示会区分 Key 无效（401）、地区限制（403）、额度或频率受限（429）与服务繁忙（503）。
+
+## 来源配置
+
+来源是 Apple CMS 风格的 JSON 采集接口，最小格式：
+
+```json
+{
+  "sources": [
+    {
+      "name": "示例来源",
+      "url": "https://example.invalid/api.php/provide/vod",
+      "enabled": true
+    }
+  ]
+}
+```
+
+导入方式：
+
+- 电视「设置 → 视频来源 → 添加来源 / 扫码导入」，粘贴 JSON 或订阅地址；
+- 手机「设置 → 影视来源」，填写后通过局域网发送到电视，或扫码在手机上填写；
+- 支持逐条启用、停用与删除，删除后搜索不再请求该来源。
+
+本地默认来源：把 `config/default-sources.example.json` 复制为 `local/default-sources.json` 并填入自己的接口，然后正常构建即可打包进 APK：
+
+```bash
 ./gradlew :app:assembleDebug
 ```
 
-不提供本地文件时会生成空来源配置；`-PincludeLocalSources=false` 始终强制使用空配置。升级仅补入新的默认来源一次，保留用户删除记录和启停状态。
+`local/` 已被 Git 忽略；文件不存在或使用 `-PincludeLocalSources=false` 时生成空来源配置。**包含本地来源的 APK 内含接口地址，请勿公开上传。**
 
-**包含本地配置的 APK 也包含源地址**，请勿将其作为公开发行包上传。源码打包脚本不会收录 `local/`、研究记录、设备证据或签名文件。
+## 数据与隐私
 
-## 首页推荐
+- 所有数据保存在本机 SharedPreferences：来源、历史、片单、播放进度、片头片尾、语音 Key、目录缓存。
+- 应用不包含账号体系与统计上报；联网仅用于请求你配置的 CMS 来源、豆瓣展示接口、硅基流动语音接口与更新通道。
+- `allowBackup=false`，更新包通过 `FileProvider` 交给系统安装。
+- 应用内不播放任何内置内容，片源可用性取决于来源接口与设备解码能力。
 
-电视启动进入推荐首页：继续观看主卡、搜索/直播快捷入口、推荐海报和收藏/历史/设置导航。电视与手机直接复用同一推荐接口、缓存格式和本机观看库，各设备数据独立保存；更多片单可切换分类。继续观看会重新获取详情和剧集，恢复已有集数与进度。推荐请求不占用搜索工作线程，失败保留旧片单。
+## 项目结构
 
-手机首页展示搜索框、电影/电视剧/综艺/动漫分类，以及海报、片名和评分。电影分类包含热门电影与高分佳作，横向浏览片单，点击「更多」查看完整列表。点击海报只把片名交给现有搜索流程；推荐数据不包含播放地址，也不保证已配置来源有对应影片。
+```text
+libretv-standalone/
+├── app/                                Android 应用模块
+│   ├── build.gradle                    编译配置、依赖、prepareSourceAssets
+│   └── src/
+│       ├── main/java/family/libretv/tv/  业务源码（无子包）
+│       ├── main/res/                     图标、主题、播放器布局
+│       ├── main/AndroidManifest.xml
+│       ├── test/                         JVM 单元测试
+│       └── androidTest/                  仪器测试
+├── third-party/upnpcast/               内置 DLNA 投屏库（MIT）
+├── docs/                               设计与说明文档（docs/wiki 为工程 Wiki）
+├── config/                             默认来源配置示例
+├── scripts/                            发布与镜像脚本
+├── local/                              本地真实来源（Git 忽略）
+└── .github/workflows/android.yml       GitHub Actions 构建
+```
 
-片单由 App 直接获取豆瓣公开页面接口，不依赖 NAS、登录或 API Key。成功片单缓存 6 小时，先展示本机缓存再检查更新；请求失败保留上次片单，不阻塞搜索和播放。海报使用直接请求并附带豆瓣 Referer，失败显示占位图。可在手机设置中关闭推荐。接口和海报可用性取决于网络及上游策略。
+主要入口：
 
-## 手机播放手势
+| 类 | 职责 |
+| --- | --- |
+| `MainActivity` | TV 入口与调度：搜索、语音、详情、设置、扫码配对 |
+| `TvHomeActivity` | TV 首页、片库、榜单、历史 |
+| `PhoneActivity` | 手机界面：首页、搜索、历史、片单、设置 |
+| `DirectPlayerActivity` | 播放页（Media3） |
+| `CatalogRepository` | 豆瓣展示层：首页、片库、榜单 |
+| `LocalRepository` | 来源管理、多源并发搜索 |
+| `PlaybackStore` | 历史、片单与续播 |
+| `VoiceSearch` | 录音、语音转写与关键词整理 |
+| `AppUpdater` | 更新检查、下载与校验 |
 
-在视频画面空白区域横向拖动可预览目标进度，松手后跳转；双击左侧后退 5 秒，双击右侧前进 5 秒。左侧上下滑动调当前播放窗口亮度，右侧上下滑动调媒体音量，单击显示或隐藏控制栏。按钮和原有进度条仍可直接操作。
+## 文档
 
-点播支持正常快进/后退；直播仅在频道支持的直播窗口内跳转，不支持调整进度时会提示。亮度不写系统全局设置。电视保留遥控操作。
+- 工程 Wiki：[docs/wiki](docs/wiki/README.md)（架构、模块、类说明、存储、播放、投屏、更新、构建）
+- 发布流程：[docs/releasing.md](docs/releasing.md)
+- 兼容说明：[docs/android-compatibility.md](docs/android-compatibility.md)
+- 更新历史：[docs/release-notes-0.21.0.md](docs/release-notes-0.21.0.md)
 
-## 直播订阅
+## 许可与声明
 
-在「设置 → 直播订阅」添加 HTTP(S) M3U 地址，也可扫码添加订阅链接或导入 M3U 文件。支持频道分组、频道收藏、多线路、换台与回到直播位置。直播资料独立保存，不写入影视收藏、播放列表或点播进度。电视直播列表采用左侧分组和右侧圆角频道卡片，支持台标、缺图占位及清晰焦点；确认播放，长按确认或菜单键打开收藏操作，刷新和播放返回后保留所选卡片。电视直播播放器使用遥控器左键上一台、右键下一台，按频道列表顺序首尾循环，长按不连续换台；控制栏显示和隐藏时均生效。手机直播及点播操作保留原样。
-
-连接、缓冲和失败状态会持续显示。播放落后直播窗口时重新获取直播流，连接失败或卡住时有限重试并切换备选线路；达到上限后显示重试入口。连续稳定播放后记住可播线路，失败线路短暂降低优先级，不删除订阅或频道。自动换线只使用该频道已配置的线路；上游供数持续不足时仍需其他可用线路。
-
-进入直播页时默认每 6 小时检查一次订阅，可改为每天或关闭自动更新；也可手动刷新。App 关闭后不运行定时任务。下载或解析失败时保留旧频道，频道能否播放仍取决于上游与设备解码能力。首期支持 HTTP(S) 频道，不包含组播/RTMP、节目单和回看。
-
-手机可在「设置 → 直播订阅 → 导入 M3U 文件」选择文件；电视可在直播页选择「导入 M3U」。电视需要可用的系统文件选择器或支持文件选择的文件管理器，可从其提供的位置选择文件（例如 U 盘）。同名文件重新导入会更新原文件源，不同文件名会另建文件源；稳定的频道名称或 tvg-id 可保持收藏。文件源不自动更新，收到新版后需重新导入。导入后不依赖原文件持续存在，但播放仍需要联网；文件中的地址、请求头或令牌也会随文件分享，应只分发有权分享的清单。
-
-本机默认直播配置使用 `local/default-live-sources.json`，格式见 `config/default-live-sources.example.json`。它和影视来源一样被 Git 忽略；公开构建的两类默认配置均为空。
-
-## 更新
-
-App 启动后每天后台检查一次本项目的 GitHub Release，也可在手机设置或电视设置中选择“检查更新”。发现新版后确认下载，校验安装包大小、SHA-256、包名、版本码及签名，再交给系统确认安装。覆盖升级保留本机来源、收藏和播放进度；检查失败不影响使用。
-
-更新页可选择「自动切换 / GitHub 直连 / Gitee 镜像 / 加速」。自动模式先连接 GitHub，失败后依次尝试 Gitee 下载镜像及内置 HTTPS 公共加速通道；清单检查成功后下载优先沿用该通道。Gitee 清单通过官方 API 获取，APK 从正式发行版附件下载。连接超时、HTTP 错误、损坏清单或下载校验失败均可切换，失败的半成品会删除。也可设置自定义 HTTPS 代理前缀，例如 `https://你的域名/`，App 会在后面拼接本项目 GitHub 文件地址；留空恢复内置通道。它只用于公开更新文件，不代理影视或直播，不发送账号凭据。
-
-公共通道可用性随网络变化，不保证持续可用；代理返回的 APK 仍须通过包名、版本、大小、哈希和本机签名校验。更新需要设备至少能访问一个更新通道。首次安装需要允许系统安装此 App；后续更新仍需系统安装确认。旧版需要先成功升级一次，才能获得备用通道功能。
-
-## 验证与许可
-
-本地单元测试和 Android instrumentation 测试分别位于 `app/src/test`、`app/src/androidTest`。手机与电视入口共用本地数据。构建通过、模拟器通过与电视真机通过是不同验收层级。
-
-源码与公开包也同步到 [Gitee 镜像](https://gitee.com/xdmdpz/libretv-standalone)。双地址推送、下载镜像与正式发行版 API 的配置和验收见 [发布文档](docs/releasing.md)。
-
-项目采用 AGPL-3.0-or-later，第三方许可见 [NOTICE.md](NOTICE.md) 和 `third-party/upnpcast/LICENSE`。
-
-老电视的 API 下限、兼容处理与验证范围见 [Android 兼容说明](docs/android-compatibility.md)。
+- 项目采用 [AGPL-3.0-or-later](LICENSE)，第三方许可与署名见 [NOTICE.md](NOTICE.md) 与 `third-party/upnpcast/LICENSE`。
+- 本项目为独立客户端，部分业务设计与解析逻辑参考 LibreTV，不是 LibreTV 官方发行版。
+- 仓库只包含程序代码，不提供、不托管、不推荐任何影视资源；请自行配置合法来源并遵守当地法律与内容授权。
+- 投屏、语音识别与低版本系统的兼容性需要在对应设备上验收，构建通过不等于真机可用。
