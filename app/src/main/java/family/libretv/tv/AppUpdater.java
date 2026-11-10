@@ -126,7 +126,7 @@ final class AppUpdater {
     }
     private HttpURLConnection open(String path) throws Exception {
         if (nas == null) return connect(origin.resolve(path),"");
-        if (BuildConfig.APPLICATION_ID.equals("family.libretv.standalone"))
+        if (BuildConfig.APPLICATION_ID.equals("family.libretv.standalone") || BuildConfig.APPLICATION_ID.equals("family.libretv.starlight"))
             throw new IOException("独立研究版已禁用家庭 NAS 更新通道");
         HttpURLConnection conn = (HttpURLConnection) origin.resolve(path).toURL().openConnection();
         conn.setInstanceFollowRedirects(false); conn.setConnectTimeout(5000); conn.setReadTimeout(20000);

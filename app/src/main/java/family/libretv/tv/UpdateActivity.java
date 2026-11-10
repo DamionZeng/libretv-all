@@ -60,7 +60,7 @@ public final class UpdateActivity extends Activity {
         saveApk=button(content,"保存安装包到文件…",this::savePending);saveApk.setVisibility(android.view.View.GONE);
         TextView hint=PiankeUi.text(this,"更新后保留来源与观看记录。",14,false);hint.setPadding(0,pad/2,0,pad/2);content.addView(hint);
         routeButton=button(content,"",this::chooseRoute);updateRouteLabel();configureUpdater();
-        Button about=button(content,"关于片刻",()->PiankeUi.about(this));android.graphics.drawable.Drawable icon=getDrawable(R.drawable.pianke_art);icon.setBounds(0,0,PiankeUi.dp(this,28),PiankeUi.dp(this,28));about.setCompoundDrawables(icon,null,null,null);about.setCompoundDrawablePadding(PiankeUi.dp(this,12));check.requestFocus();
+        Button about=button(content,"关于星光影院",()->PiankeUi.about(this));android.graphics.drawable.Drawable icon=getDrawable(R.drawable.spark_mark);icon.setBounds(0,0,PiankeUi.dp(this,28),PiankeUi.dp(this,28));about.setCompoundDrawables(icon,null,null,null);about.setCompoundDrawablePadding(PiankeUi.dp(this,12));check.requestFocus();
         if(restorePending()) {
             if(getPreferences(0).getBoolean("awaitingPermission",false) && (Build.VERSION.SDK_INT<26 || getPackageManager().canRequestPackageInstalls()))installPending();
         } else checkUpdate();

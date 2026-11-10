@@ -3,6 +3,10 @@ package family.libretv.tv;
 import android.app.Activity;
 import android.os.*;
 import android.graphics.Color;
+import android.graphics.Outline;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.StateListDrawable;
 import android.content.res.ColorStateList;
 import android.text.Html;
 import android.view.inputmethod.EditorInfo;
@@ -25,21 +29,24 @@ import java.util.concurrent.*;
 
 @androidx.media3.common.util.UnstableApi
 public final class MainActivity extends Activity {
-    private enum Screen { CONFIG, LOGIN, SEARCH, FAVORITES, PLAYLIST, SETTINGS, PAIRING, DETAIL, PLAYER }
+    private enum Screen { CONFIG, LOGIN, SEARCH, PLAYLIST, SETTINGS, PAIRING, DETAIL, PLAYER }
     private Screen screen = Screen.CONFIG;
     private final ExecutorService network = Executors.newSingleThreadExecutor();
     private final ExecutorService updateChecks = Executors.newSingleThreadExecutor();
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService searches = Executors.newSingleThreadExecutor();
+    private final ExecutorService sourceScans = Executors.newCachedThreadPool();
     private Future<?> searchFuture;
     private int searchToken, searchCompleted, searchTotal, searchFailed;
     private boolean searching;
     private TextView searchSummary;
     private Button stopSearchButton;
+    private View navVoice;
     private Screen detailReturn = Screen.SEARCH;
     private CheckBox autoNext;
     private long lastProgressSave;
     private int generation;
+    private int sourcePickerToken;
     private boolean busy, stopped;
     private PhonePairingServer pairingServer;
     private ImageView pairingQr;
@@ -62,6 +69,19 @@ public final class MainActivity extends Activity {
     private GridLayoutManager resultsLayout;
     private int resultColumns, resultFocusTicket;
     private View searchTarget;
+    /** 语音搜索：当前搜索输入框、录音器、聆听弹窗与一次识别的会话号。 */
+    private EditText searchField;
+    private VoiceSearch.Recorder recorder;
+    private android.app.AlertDialog voiceDialog;
+    private int voiceToken;
+    private final ExecutorService voiceWorker = Executors.newSingleThreadExecutor();
+    private final Runnable voicePoll = new Runnable() {
+        @Override public void run() {
+            if (recorder == null) return;
+            if (recorder.running()) { main.postDelayed(this, 200); return; }
+            finishListening();
+        }
+    };
     private final Set<String> enabledSources = new HashSet<>();
     private String query = "", title = "", mime;
     private int resultIndex, episodeIndex;
@@ -79,9 +99,9 @@ public final class MainActivity extends Activity {
     private SegmentSkipController segmentSkip;
     private android.app.AlertDialog playerOptions;
     private JSONObject detailSource;
-    private String detailFavoriteId="";
-    private boolean detailFromFavorites, favoriteAvailable;
-    private Button favoriteButton;
+    private boolean detailFromHome;
+    private DiscoveryRepository discovery;
+    private final ExecutorService relatedWorker = Executors.newSingleThreadExecutor();
     private ProgressBar playbackProgress;
     private boolean controlsVisible, playerHasFrame;
     private final Runnable hidePlayerControls = () -> {
@@ -116,11 +136,15 @@ public final class MainActivity extends Activity {
         }
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
         try {
-            client=new NasClient(this);sources=client.local.sources();loadSourceSelection();showSearch();
+            client=new NasClient(this);discovery=new DiscoveryRepository(this,client.local);sources=client.local.sources();loadSourceSelection();showSearch();
             String destination=getIntent().getStringExtra("tvDestination");
-            if("favorites".equals(destination))showFavorites();
-            else if("playlist".equals(destination))showPlaylist();
+            if("playlist".equals(destination))showPlaylist();
             else if("settings".equals(destination))showSettings();
+            else if("voice".equals(destination))startVoiceSearch();
+            else if("detail".equals(destination)){
+                detailFromHome=true;
+                loadDetail(new JSONObject(getIntent().getStringExtra("detailItem")),0);
+            }
             else if("resume".equals(destination)){
                 JSONObject entry=new JSONObject(getIntent().getStringExtra("resumeEntry"));
                 loadDetail(new JSONObject(entry.getJSONObject("item").toString()).put("favoriteSource",entry.getJSONObject("source")),0,true);
@@ -137,6 +161,176 @@ public final class MainActivity extends Activity {
     }
 
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
+
+    /* 星光影院：哑光深灰 + 暖琥珀，仅用于详情页视觉 */
+    private static final int SBG=0xff0e0f11,SSURFACE=0xff16181b,SSURFACE_2=0xff1e2126,SWASH=0x1fe8a33d;
+    private static final int STEXT_1=0xfff3f4f6,STEXT_2=0xffa8aeb6,STEXT_3=0xff6d737b;
+    private static final int SACCENT=0xffe8a33d,SACCENT_HI=0xfff2b95a;
+    private GradientDrawable rounded(int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(radius));return d;}
+    private StateListDrawable selectable(int normal,int radius){
+        StateListDrawable d=new StateListDrawable();
+        d.addState(new int[]{-android.R.attr.state_enabled},rounded(0xff141619,radius));
+        GradientDrawable focused=rounded(SSURFACE_2,radius);focused.setStroke(dp(2),SACCENT);
+        d.addState(new int[]{android.R.attr.state_focused},focused);
+        d.addState(new int[]{},rounded(normal,radius));return d;
+    }
+    private void clipRounded(View view,int radius){
+        float r=dp(radius);
+        view.setOutlineProvider(new ViewOutlineProvider(){@Override public void getOutline(View v,Outline outline){outline.setRoundRect(0,0,v.getWidth(),v.getHeight(),r);}});
+        view.setClipToOutline(true);
+    }
+    private TextView starlightText(String value,int size,int color){
+        TextView t=new TextView(this);t.setText(value);t.setTextSize(size);t.setTextColor(color);return t;
+    }
+    private StateListDrawable detailPrimaryState(){
+        StateListDrawable d=new StateListDrawable();
+        d.addState(new int[]{android.R.attr.state_focused},rounded(SACCENT_HI,999));
+        d.addState(new int[]{},rounded(SACCENT,999));return d;
+    }
+    private Button detailButton(LinearLayout parent,String text,boolean primary,Runnable action){
+        Button b=new Button(this);b.setText(text);b.setAllCaps(false);b.setTextSize(16);
+        b.setMinWidth(0);b.setMinimumWidth(0);b.setMinHeight(0);b.setMinimumHeight(0);
+        b.setPadding(dp(26),0,dp(26),0);b.setFocusableInTouchMode(true);
+        b.setTextColor(primary?0xff1a1206:STEXT_1);
+        b.setBackground(primary?detailPrimaryState():selectable(SSURFACE,999));
+        b.setOnFocusChangeListener((v,focused)->{
+            v.setElevation(focused?dp(6):0);
+            if(!primary)b.setTextColor(focused?SACCENT:STEXT_1);
+        });
+        b.setOnClickListener(v->{if(!busy)action.run();});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(52));lp.setMargins(0,dp(16),dp(12),0);
+        parent.addView(b,lp);return b;
+    }
+    private StateListDrawable episodeState(boolean current){
+        StateListDrawable d=new StateListDrawable();
+        GradientDrawable focused=rounded(SSURFACE_2,14);focused.setStroke(dp(2),SACCENT);
+        GradientDrawable active=rounded(SWASH,14);active.setStroke(dp(2),0x80e8a33d);
+        d.addState(new int[]{android.R.attr.state_focused},focused);
+        d.addState(new int[]{},current?active:rounded(SSURFACE,14));return d;
+    }
+    private void starlightProgress(LinearLayout parent,JSONObject saved){
+        if(saved==null||saved.optLong("duration")<=0)return;
+        ProgressBar bar=new ProgressBar(this,null,android.R.attr.progressBarStyleHorizontal);bar.setMax(1000);
+        bar.setProgress((int)Math.min(1000,Math.max(0,(double)saved.optLong("position")/saved.optLong("duration")*1000)));
+        bar.setProgressTintList(ColorStateList.valueOf(SACCENT));bar.setProgressBackgroundTintList(ColorStateList.valueOf(0x33383c42));
+        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(4));p.setMargins(0,dp(8),0,0);parent.addView(bar,p);
+    }
+    /** 详情页专用：把共享外壳的底色与顶部导航切到星光影院视觉，其他页面构建方式不变。 */
+    private void starlightChrome(){starlightChrome(true);}
+    /** 顶部导航在 page() 里已按星光影院样式构建，这里只需切换底色与标题。 */
+    private void starlightChrome(boolean hideHeading){
+        root.setBackgroundColor(SBG);
+        if(root.getChildCount()>1&&root.getChildAt(1) instanceof TextView){
+            TextView heading=(TextView)root.getChildAt(1);
+            if(hideHeading)heading.setVisibility(View.GONE);
+            else{
+                heading.setTextSize(28);heading.setTextColor(STEXT_1);
+                heading.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+                heading.setPadding(dp(6),dp(16),dp(6),dp(12));
+            }
+        }
+    }
+    /** 顶部导航文字项：与 TV 首页导航保持同一套焦点与选中样式。 */
+    private View navText(LinearLayout bar,String label,Runnable action){
+        Button b=new Button(this);b.setText(label);b.setAllCaps(false);b.setTextSize(14);
+        b.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{android.R.attr.state_selected},new int[]{}},new int[]{SACCENT,SACCENT,STEXT_2}));
+        b.setMinWidth(0);b.setMinimumWidth(0);b.setMinHeight(0);b.setMinimumHeight(0);
+        b.setPadding(dp(14),0,dp(14),0);b.setBackground(navState());b.setContentDescription("顶部导航 · "+label);
+        b.setFocusableInTouchMode(true);
+        b.setOnFocusChangeListener((v,focused)->{v.setElevation(focused?dp(8):0);if(focused&&screen==Screen.SEARCH){resultFocusTicket++;hideKeyboard();}});
+        b.setOnClickListener(v->{if(!busy)action.run();});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(40));lp.setMargins(dp(2),0,dp(2),0);bar.addView(b,lp);
+        return b;
+    }
+    /** 顶部导航图标项：搜索与语音用图标代替文字。 */
+    private View navIcon(LinearLayout bar,int iconRes,String label,Runnable action){
+        FrameLayout box=new FrameLayout(this);
+        ImageView icon=new ImageView(this);icon.setImageResource(iconRes);icon.setDuplicateParentStateEnabled(true);
+        icon.setImageTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused},new int[]{android.R.attr.state_selected},new int[]{}},new int[]{SACCENT,SACCENT,STEXT_2}));
+        box.addView(icon,new FrameLayout.LayoutParams(dp(21),dp(21),Gravity.CENTER));
+        box.setContentDescription("顶部导航 · "+label);box.setBackground(navState());
+        box.setFocusableInTouchMode(true);box.setFocusable(true);box.setClickable(true);
+        box.setOnFocusChangeListener((v,focused)->{v.setElevation(focused?dp(8):0);if(focused&&screen==Screen.SEARCH){resultFocusTicket++;hideKeyboard();}});
+        box.setOnClickListener(v->{if(!busy)action.run();});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(dp(46),dp(40));lp.setMargins(dp(2),0,dp(2),0);bar.addView(box,lp);
+        return box;
+    }
+    private void openHome(String target){
+        Intent intent=new Intent(this,TvHomeActivity.class).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        if(target!=null)intent.putExtra("page",target);
+        startActivity(intent);finish();
+    }
+    private StateListDrawable navState(){
+        StateListDrawable d=new StateListDrawable();
+        GradientDrawable focused=rounded(SSURFACE_2,999);focused.setStroke(dp(2),SACCENT);
+        GradientDrawable selected=rounded(SWASH,999);selected.setStroke(dp(2),0x80e8a33d);
+        d.addState(new int[]{android.R.attr.state_focused},focused);
+        d.addState(new int[]{android.R.attr.state_selected},selected);
+        d.addState(new int[]{},rounded(0x00000000,999));return d;
+    }
+    private StateListDrawable fieldBackground(){
+        StateListDrawable bg=new StateListDrawable();
+        GradientDrawable focused=rounded(SSURFACE_2,14);focused.setStroke(dp(2),SACCENT);
+        GradientDrawable normal=rounded(SSURFACE,14);normal.setStroke(dp(1),0xff2a2e35);
+        bg.addState(new int[]{android.R.attr.state_focused},focused);
+        bg.addState(new int[]{},normal);return bg;
+    }
+    private StateListDrawable tabState(){
+        StateListDrawable d=new StateListDrawable();
+        GradientDrawable focused=rounded(SSURFACE_2,12);focused.setStroke(dp(2),SACCENT);
+        GradientDrawable selected=rounded(SWASH,12);selected.setStroke(dp(2),0x80e8a33d);
+        d.addState(new int[]{android.R.attr.state_focused},focused);
+        d.addState(new int[]{android.R.attr.state_selected},selected);
+        d.addState(new int[]{},rounded(0x00000000,12));return d;
+    }
+    private Button starlightButton(LinearLayout parent,String text,boolean tab,Runnable action){
+        Button b=new Button(this);b.setText(text);b.setAllCaps(false);b.setTextSize(16);
+        b.setFocusableInTouchMode(true);b.setGravity(Gravity.CENTER_VERTICAL|Gravity.START);
+        b.setMinWidth(0);b.setMinimumWidth(0);b.setMinHeight(dp(48));b.setMinimumHeight(dp(48));
+        b.setPadding(dp(18),dp(8),dp(18),dp(8));
+        b.setTextColor(new ColorStateList(new int[][]{new int[]{-android.R.attr.state_enabled},new int[]{android.R.attr.state_focused},new int[]{android.R.attr.state_selected},new int[]{}},new int[]{0x55ffffff,SACCENT,SACCENT,STEXT_1}));
+        b.setBackground(tab?tabState():selectable(SSURFACE,12));
+        b.setOnFocusChangeListener((v,focused)->{v.setElevation(focused?dp(4):0);if(focused&&screen==Screen.SEARCH){resultFocusTicket++;hideKeyboard();}});
+        b.setOnClickListener(v->{if(!busy)action.run();});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(parent.getOrientation()==LinearLayout.HORIZONTAL?-2:-1,-2);
+        lp.setMargins(dp(4),dp(5),dp(4),dp(5));parent.addView(b,lp);return b;
+    }
+    private Button starlightPrimary(LinearLayout parent,String text,Runnable action){
+        Button b=detailButton(parent,text,true,action);
+        LinearLayout.LayoutParams lp=(LinearLayout.LayoutParams)b.getLayoutParams();lp.width=-1;lp.height=dp(54);b.setLayoutParams(lp);return b;
+    }
+    private Button starlightSmallPrimary(LinearLayout parent,String text,Runnable action){
+        Button b=detailButton(parent,text,true,action);
+        LinearLayout.LayoutParams lp=(LinearLayout.LayoutParams)b.getLayoutParams();
+        lp.width=-2;lp.height=dp(50);lp.setMargins(dp(8),0,dp(8),0);b.setLayoutParams(lp);
+        b.setPadding(dp(22),0,dp(22),0);return b;
+    }
+    private LinearLayout settingRow(LinearLayout parent,String title,String detail,Runnable action){
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(20),dp(13),dp(20),dp(13));box.setFocusableInTouchMode(true);box.setClickable(true);
+        box.setContentDescription(title);box.setBackground(selectable(SSURFACE,14));
+        box.setOnFocusChangeListener((v,focused)->v.setElevation(focused?dp(4):0));
+        box.setOnClickListener(v->{if(!busy)action.run();});
+        TextView name=starlightText(title,18,STEXT_1);name.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));box.addView(name);
+        if(detail!=null&&!detail.isEmpty()){TextView sub=starlightText(detail,13,STEXT_3);sub.setPadding(0,dp(4),0,0);box.addView(sub);}
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.setMargins(dp(4),0,dp(4),dp(10));parent.addView(box,lp);return box;
+    }
+    private EditText starlightInput(LinearLayout parent,String hint,String value,int type){
+        EditText edit=new EditText(this);edit.setHint(hint);edit.setText(value);edit.setSingleLine(false);
+        edit.setTextSize(16);edit.setInputType(type);edit.setSaveEnabled(false);
+        edit.setTextColor(STEXT_1);edit.setHintTextColor(STEXT_3);edit.setPadding(dp(18),dp(14),dp(18),dp(14));
+        edit.setBackground(fieldBackground());
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,dp(120));lp.setMargins(dp(4),dp(12),dp(4),dp(8));parent.addView(edit,lp);return edit;
+    }
+    private void emptyState(LinearLayout parent,String title,String detail){
+        LinearLayout box=new LinearLayout(this);box.setOrientation(LinearLayout.VERTICAL);box.setGravity(Gravity.CENTER);
+        box.setPadding(dp(40),dp(44),dp(40),dp(44));box.setBackground(rounded(SSURFACE,18));box.setFocusable(false);
+        ImageView mark=new ImageView(this);mark.setImageResource(R.drawable.spark_mark);box.addView(mark,new LinearLayout.LayoutParams(dp(46),dp(46)));
+        TextView name=starlightText(title,21,STEXT_1);name.setGravity(Gravity.CENTER);
+        name.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));name.setPadding(0,dp(16),0,0);box.addView(name);
+        TextView sub=starlightText(detail,14,STEXT_3);sub.setGravity(Gravity.CENTER);sub.setPadding(0,dp(8),0,0);box.addView(sub);
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);lp.topMargin=dp(12);parent.addView(box,lp);
+    }
     private TextView label(String text, int size) {
         TextView v = new TextView(this); v.setText(text); v.setTextSize(size); v.setTextColor(Color.rgb(228, 238, 246));
         v.setPadding(dp(6), dp(6), dp(6), dp(6)); return v;
@@ -152,16 +346,25 @@ public final class MainActivity extends Activity {
         root = new LinearLayout(this); root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(dp(40), dp(18), dp(40), dp(18)); root.setBackgroundColor(PiankeUi.BACKGROUND);
         LinearLayout navigation=row();navigation.setGravity(Gravity.CENTER_VERTICAL);root.addView(navigation);
-        navigation.addView(PiankeUi.brand(this,48,48));
-        button(navigation,"首页",()->{startActivity(new Intent(this,TvHomeActivity.class));finish();});
-        button(navigation,"搜索",this::showSearch);
-        button(navigation,"直播",()->startActivity(new Intent(this,LiveBrowseActivity.class)));
-        button(navigation,"收藏",this::showFavorites);
-        button(navigation,"历史",()->startActivity(new Intent(this,TvHomeActivity.class).putExtra("page","history")));
-        button(navigation,"设置",this::showSettings);
-        String active=next==Screen.SETTINGS||next==Screen.CONFIG||next==Screen.PAIRING?"设置":next==Screen.FAVORITES?"收藏":next==Screen.PLAYLIST?"历史":"搜索";
-        for(int i=0;i<navigation.getChildCount();i++)if(navigation.getChildAt(i) instanceof Button){Button nav=(Button)navigation.getChildAt(i);nav.setContentDescription("顶部导航 · "+nav.getText());if(active.contentEquals(nav.getText()))nav.setBackground(PiankeUi.focus(this,true));}
-        root.addView(label(heading.replace("片刻   /   ","").replace("片刻 · ",""), 24));
+        ImageView mark=new ImageView(this);mark.setImageResource(R.drawable.spark_mark);mark.setContentDescription("星光影院");
+        navigation.addView(mark,new LinearLayout.LayoutParams(dp(22),dp(22)));
+        TextView wordmark=starlightText("星光影院",21,STEXT_1);
+        wordmark.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+        wordmark.setLetterSpacing(0.02f);wordmark.setPadding(dp(10),0,dp(26),0);navigation.addView(wordmark);
+        View navHome=navText(navigation,"首页",()->openHome(null));
+        View navLibrary=navText(navigation,"片库",()->openHome("browse"));
+        View navRank=navText(navigation,"榜单",()->openHome("rank"));
+        View navSearch=navIcon(navigation,R.drawable.ic_nav_search,"搜索",this::showSearch);
+        navVoice=navIcon(navigation,R.drawable.ic_nav_mic,"语音搜索",this::startVoiceSearch);
+        TextView clock=starlightText(new java.text.SimpleDateFormat("HH:mm",Locale.getDefault()).format(new java.util.Date()),14,STEXT_3);
+        clock.setGravity(Gravity.END);clock.setPadding(0,0,dp(18),0);
+        navigation.addView(clock,new LinearLayout.LayoutParams(0,-2,1));
+        View navHistory=navText(navigation,"历史",()->openHome("history"));
+        View navSettings=navText(navigation,"设置",this::showSettings);
+        View activeNav=next==Screen.SETTINGS||next==Screen.CONFIG||next==Screen.PAIRING?navSettings
+                :next==Screen.PLAYLIST?navHistory:next==Screen.SEARCH?navSearch:navHome;
+        activeNav.setSelected(true);
+        root.addView(label(heading.replace("星光影院   /   ","").replace("星光影院 · ",""), 24));
         message = label("", 15); message.setVisibility(View.GONE);
         message.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(message);
         ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true);
@@ -229,18 +432,20 @@ public final class MainActivity extends Activity {
         setNotice("操作失败：" + (ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage()));
     }
     private void showConfig() {
-        page(Screen.CONFIG, "片刻 · 来源配置");
-        content.addView(label("独立运行，无需 NAS。默认源可删除；支持粘贴订阅地址或 JSON。",17));
-        EditText value=input(content,"订阅地址或 JSON","",InputType.TYPE_CLASS_TEXT);
-        value.setSingleLine(false);
-        button(content,"导入配置",()->task("正在导入…",()->client.local.importSources(value.getText().toString()),count->{
+        page(Screen.CONFIG, "来源配置");
+        starlightChrome(false);
+        TextView intro=starlightText("独立运行，无需 NAS。默认源可删除；支持粘贴订阅地址或 JSON。",15,STEXT_2);
+        intro.setPadding(dp(6),dp(8),dp(6),dp(4));content.addView(intro);
+        EditText value=starlightInput(content,"订阅地址或 JSON","",InputType.TYPE_CLASS_TEXT);
+        starlightPrimary(content,"导入配置",()->task("正在导入…",()->client.local.importSources(value.getText().toString()),count->{
             sources=client.local.sources();loadSourceSelection();showSearch();setNotice("已新增 "+count+" 个来源");
         }));
-        button(content,"手机扫码填写配置",this::showSourcePairing);
-        button(content,"返回选片",this::homeOrSearch);
+        starlightButton(content,"手机扫码填写配置",false,this::showSourcePairing);
+        starlightButton(content,"返回选片",false,this::homeOrSearch);
     }
     private void showSourcePairing() {
         page(Screen.PAIRING,"扫码添加来源");
+        starlightChrome(false);
         try {
             List<String> addresses=PhonePairingServer.localAddresses();
             if(addresses.isEmpty())throw new Exception("请先连接局域网");
@@ -250,13 +455,15 @@ public final class MainActivity extends Activity {
                     .setNegativeButton("取消",(d,w)->showConfig()).setPositiveButton("导入",(d,w)->task("正在导入…",()->client.local.importSources(value),count->{sources=client.local.sources();loadSourceSelection();showSearch();setNotice("已新增 "+count+" 个来源");})).show();
             }));
             pairingQr=new ImageView(this);pairingQr.setImageBitmap(PairingQr.create(pairingServer.url()));
+            pairingQr.setBackground(rounded(SSURFACE,16));pairingQr.setPadding(dp(12),dp(12),dp(12),dp(12));
             content.addView(pairingQr,new LinearLayout.LayoutParams(dp(260),dp(260)));
-            content.addView(label("手机和电视同一局域网，扫码填写订阅或 JSON。二维码 5 分钟有效。",17));
-            button(content,"返回",this::showConfig);main.postDelayed(expirePairing,PhonePairingServer.LIFETIME_MS);
+            TextView hint=starlightText("手机和电视同一局域网，扫码填写订阅或 JSON。二维码 5 分钟有效。",15,STEXT_2);
+            hint.setPadding(dp(6),dp(12),dp(6),dp(6));content.addView(hint);
+            starlightButton(content,"返回",false,this::showConfig);main.postDelayed(expirePairing,PhonePairingServer.LIFETIME_MS);
         }catch(Exception e){setNotice(e.getMessage());}
     }
     private void showLogin() {
-        page(Screen.LOGIN, "片刻 · 登录 NAS");
+        page(Screen.LOGIN, "星光影院 · 登录 NAS");
         content.addView(label(client.origin.toString(), 17));
         EditText password = input(content, "NAS 访问密码（不保存）", "", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         Button login = button(content, "登录", () -> {
@@ -286,48 +493,64 @@ public final class MainActivity extends Activity {
     }
 
     private void showSearch() {
-        page(Screen.SEARCH, "片刻   /   独立影院");
+        page(Screen.SEARCH, "搜索");
+        starlightChrome(false);
         root.removeViewAt(root.getChildCount() - 1);
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
         LinearLayout searchRow = row(); searchRow.setGravity(Gravity.CENTER_VERTICAL); content.addView(searchRow);
         EditText keywords = input(searchRow, "搜索电影、剧集…", query, InputType.TYPE_CLASS_TEXT);
         keywords.setId(View.generateViewId()); keywords.setImeOptions(EditorInfo.IME_ACTION_SEARCH);
-        keywords.setPadding(dp(18), 0, dp(18), 0); keywords.setBackgroundResource(R.drawable.focus_button);
-        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(0, dp(56), 1);
-        inputParams.setMargins(dp(4), dp(8), dp(12), dp(8)); keywords.setLayoutParams(inputParams);
-        Button search = button(searchRow, "搜索", () -> performSearch(keywords));
-        search.setId(View.generateViewId()); search.setMinWidth(dp(124)); search.setHeight(dp(56));
-        stopSearchButton = button(searchRow, "停止搜索", () -> { cancelSearch(); updateSearchSummary(); });
+        keywords.setTextSize(18); keywords.setTextColor(STEXT_1); keywords.setHintTextColor(STEXT_3);
+        keywords.setPadding(dp(18), 0, dp(18), 0); keywords.setBackground(fieldBackground());
+        LinearLayout.LayoutParams inputParams = new LinearLayout.LayoutParams(0, dp(58), 1);
+        inputParams.setMargins(dp(4), dp(10), dp(12), dp(6)); keywords.setLayoutParams(inputParams);
+        Button search = starlightButton(searchRow, "搜索", false, () -> performSearch(keywords));
+        search.setId(View.generateViewId()); search.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams searchParams = (LinearLayout.LayoutParams) search.getLayoutParams();
+        searchParams.width = dp(132); searchParams.height = dp(58); searchParams.setMargins(dp(4), dp(10), dp(10), dp(6)); search.setLayoutParams(searchParams);
+        Button voice = starlightButton(searchRow, "语音", false, this::startVoiceSearch);
+        voice.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams voiceParams = (LinearLayout.LayoutParams) voice.getLayoutParams();
+        voiceParams.width = dp(104); voiceParams.height = dp(58);
+        voiceParams.setMargins(dp(4), dp(10), dp(4), dp(6)); voice.setLayoutParams(voiceParams);
+        stopSearchButton = starlightButton(searchRow, "停止搜索", false, () -> { cancelSearch(); updateSearchSummary(); });
+        stopSearchButton.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams stopParams = (LinearLayout.LayoutParams) stopSearchButton.getLayoutParams();
+        stopParams.height = dp(58); stopParams.setMargins(dp(4), dp(10), dp(4), dp(6)); stopSearchButton.setLayoutParams(stopParams);
         stopSearchButton.setEnabled(searching);
         LinearLayout navigation = row(); content.addView(navigation);
-        Button library=button(navigation, "本机收藏夹", this::showFavorites);
-        button(navigation, "播放列表", this::showPlaylist);
-        button(navigation, "电视直播", ()->startActivity(new android.content.Intent(this,LiveBrowseActivity.class)));
-        Button settings = button(navigation, "设置", this::showSettings);
+        Button library = starlightButton(navigation, "我的片单", false, this::showPlaylist);
+        Button settings = starlightButton(navigation, "设置", false, this::showSettings);
         if (availableUpdate != null) settings.setText("设置 · 有更新");
-        settings.setTextSize(16); settings.setHeight(dp(56));
         searchTarget = search;
         // EditText's built-in caret navigation and FocusFinder disagree on this TV layout.
         // Define both axes explicitly: UP from Search always reaches the search field.
         search.setNextFocusUpId(keywords.getId()); search.setNextFocusLeftId(keywords.getId());
         keywords.setNextFocusDownId(search.getId());
         focusLink(keywords, KeyEvent.KEYCODE_DPAD_DOWN, search);
+        searchField = keywords;
         search.setOnKeyListener((v, code, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (code == KeyEvent.KEYCODE_DPAD_UP || code == KeyEvent.KEYCODE_DPAD_LEFT) { keywords.requestFocus(); return true; }
-            if (code == KeyEvent.KEYCODE_DPAD_RIGHT) {
-                if(searching)stopSearchButton.requestFocus();else library.requestFocus();return true;
-            }
+            if (code == KeyEvent.KEYCODE_DPAD_RIGHT) { voice.requestFocus(); return true; }
             if (code == KeyEvent.KEYCODE_DPAD_DOWN) {
                 if (results.length() > 0) focusResult(0, 0);else library.requestFocus();
                 return true;
             }
             return false;
         });
+        voice.setOnKeyListener((v, code, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (code == KeyEvent.KEYCODE_DPAD_LEFT) { search.requestFocus(); return true; }
+            if (code == KeyEvent.KEYCODE_DPAD_UP) { keywords.requestFocus(); return true; }
+            if (code == KeyEvent.KEYCODE_DPAD_RIGHT) { if (searching) stopSearchButton.requestFocus(); else library.requestFocus(); return true; }
+            if (code == KeyEvent.KEYCODE_DPAD_DOWN) { if (results.length() > 0) focusResult(0, 0); else library.requestFocus(); return true; }
+            return false;
+        });
         stopSearchButton.setOnKeyListener((v,code,event)->{
             if(event.getAction()!=KeyEvent.ACTION_DOWN)return false;
-            if(code==KeyEvent.KEYCODE_DPAD_LEFT){search.requestFocus();return true;}
+            if(code==KeyEvent.KEYCODE_DPAD_LEFT){voice.requestFocus();return true;}
             if(code==KeyEvent.KEYCODE_DPAD_DOWN){library.requestFocus();return true;}
             return false;
         });
@@ -348,7 +571,7 @@ public final class MainActivity extends Activity {
             }
             return false;
         });
-        searchSummary=label("",17); content.addView(searchSummary); updateSearchSummary();
+        searchSummary=starlightText("",13,STEXT_3);searchSummary.setPadding(dp(6),dp(8),dp(6),dp(4));content.addView(searchSummary);updateSearchSummary();
             int width = getResources().getConfiguration().screenWidthDp;
             resultColumns = width >= 1000 ? 6 : width >= 800 ? 5 : width >= 600 ? 4 : 3;
             int posterHeight = dp((int) (((width - 80f) / resultColumns - 22) * 1.5f));
@@ -400,7 +623,128 @@ public final class MainActivity extends Activity {
             });
             content.addView(resultsView, new LinearLayout.LayoutParams(-1, 0, 1));
         if (sources.length() == 0) setNotice("暂无可用来源，请在设置中导入来源。");
-        if (results.length() > 0) focusResult(Math.min(resultIndex, results.length() - 1), 0); else search.requestFocus();
+        // 进入搜索页时默认选中顶部的语音图标，按确认即可直接说话搜索。
+        if (navVoice != null) { navVoice.setNextFocusDownId(keywords.getId()); navVoice.requestFocus(); }
+        else if (results.length() > 0) focusResult(Math.min(resultIndex, results.length() - 1), 0);
+        else search.requestFocus();
+    }
+    /* —— 语音搜索：录音 → Whisper 转写 → 大模型整理关键词 → 复用现有搜索 —— */
+    private void startVoiceSearch() {
+        if (screen != Screen.SEARCH) { showSearch(); }
+        if (VoiceSearch.key(this).isEmpty()) {
+            showVoiceSettings();
+            setNotice("语音搜索需要先填写硅基流动 API Key，免费注册 cloud.siliconflow.cn");
+            return;
+        }
+        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.RECORD_AUDIO}, 73);
+            return;
+        }
+        beginListening();
+    }
+    private void beginListening() {
+        if (screen != Screen.SEARCH) return;
+        stopListening(false);
+        try {
+            recorder = new VoiceSearch.Recorder();
+        } catch (Exception e) {
+            setNotice("语音搜索不可用：" + (e.getMessage() == null ? "麦克风打开失败" : e.getMessage()));
+            return;
+        }
+        recorder.start();
+        voiceDialog = new android.app.AlertDialog.Builder(this)
+                .setTitle("正在聆听")
+                .setMessage("请说出想看的影片，例如「我想看流浪地球」")
+                .setNegativeButton("取消", (d, w) -> stopListening(false))
+                .create();
+        voiceDialog.setOnDismissListener(d -> { if (recorder != null) stopListening(false); });
+        voiceDialog.show();
+        main.postDelayed(voicePoll, 200);
+    }
+    private void finishListening() {
+        VoiceSearch.Recorder active = recorder;
+        if (active == null) return;
+        recorder = null;
+        main.removeCallbacks(voicePoll);
+        byte[] wav = active.stop();
+        android.util.Log.d("VoiceSearch", "peak=" + active.peak() + " bytes=" + wav.length);
+        if (active.peak() < 40) {
+            setNotice("没有录到声音，请确认电视麦克风可用，或改用蓝牙耳机麦克风");
+            dismissVoiceDialog();
+            return;
+        }
+        if (wav.length < 3200) {
+            setNotice("没有录到声音，请再试一次");
+            dismissVoiceDialog();
+            return;
+        }
+        final int token = ++voiceToken;
+        final long started = System.currentTimeMillis();
+        if (voiceDialog != null) voiceDialog.setMessage("正在识别…");
+        final EditText field = searchField;
+        voiceWorker.submit(() -> {
+            try {
+                String key = VoiceSearch.key(MainActivity.this);
+                String text = VoiceSearch.transcribe(wav, key);
+                String keyword = VoiceSearch.keyword(text, key);
+                android.util.Log.d("VoiceSearch", "ready " + (System.currentTimeMillis() - started) + "ms keyword=" + keyword);
+                main.post(() -> {
+                    dismissVoiceDialog();
+                    if (token != voiceToken || isFinishing() || isDestroyed()) return;
+                    if (screen != Screen.SEARCH || field == null) return;
+                    field.setText(keyword);
+                    performSearch(field);
+                });
+            } catch (Exception e) {
+                main.post(() -> {
+                    dismissVoiceDialog();
+                    if (token != voiceToken || isFinishing() || isDestroyed()) return;
+                    setNotice("语音搜索失败：" + (e.getMessage() == null ? "网络异常" : e.getMessage()));
+                });
+            }
+        });
+    }
+    /** 停止录音并关闭弹窗；keepNotice 为 true 时保留提示文字。 */
+    private void stopListening(boolean keepNotice) {
+        main.removeCallbacks(voicePoll);
+        if (recorder != null) { recorder.cancel(); recorder = null; }
+        dismissVoiceDialog();
+        if (!keepNotice && screen == Screen.SEARCH) setNotice("");
+    }
+    private void dismissVoiceDialog() {
+        android.app.AlertDialog dialog = voiceDialog;
+        voiceDialog = null;
+        if (dialog != null) { try { dialog.dismiss(); } catch (Exception ignored) { } }
+    }
+    @Override public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != 73) return;
+        if (grants.length > 0 && grants[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) beginListening();
+        else setNotice("未获得麦克风权限，无法语音搜索");
+    }
+    private void showVoiceSettings() {
+        page(Screen.SETTINGS, "语音搜索");
+        starlightChrome(false);
+        LinearLayout nav = row(); content.addView(nav);
+        starlightButton(nav, "‹ 返回设置", false, this::showSettings);
+        TextView hint = starlightText("电视麦克风录音后先用 SenseVoice 转成文字，再由大模型整理成搜索关键词，都走硅基流动的免费额度。"
+                + "在 cloud.siliconflow.cn 用手机号注册，左侧「API 密钥」创建后把 sk- 开头的 key 粘贴到这里。", 14, STEXT_2);
+        hint.setPadding(dp(6), dp(8), dp(6), dp(6)); content.addView(hint);
+        EditText field = starlightInput(content, "硅基流动 API Key（sk-…）", VoiceSearch.key(this),
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        field.setSingleLine(true);
+        LinearLayout.LayoutParams fieldParams = (LinearLayout.LayoutParams) field.getLayoutParams();
+        fieldParams.height = dp(62); field.setLayoutParams(fieldParams);
+        starlightPrimary(content, "保存", () -> {
+            String value = field.getText().toString().trim();
+            if (value.isEmpty()) { setNotice("请填写 API Key"); return; }
+            VoiceSearch.saveKey(this, value);
+            hideKeyboard();
+            showSettings();
+            setNotice("语音搜索已启用");
+        });
+        starlightButton(content, "清除 API Key", false, () -> { VoiceSearch.saveKey(this, ""); showVoiceSettings(); });
+        starlightButton(content, "去测试语音搜索", false, () -> { showSearch(); startVoiceSearch(); });
     }
     private int fitPosterHeight(int preferred) {
         if(resultsView==null || resultsView.getHeight()==0)return preferred;
@@ -434,34 +778,45 @@ public final class MainActivity extends Activity {
     private int settingsSection;
     private void showSettings() {
         page(Screen.SETTINGS,"设置");
-        LinearLayout layout=row();layout.setPadding(0,dp(12),0,0);content.addView(layout);
-        LinearLayout menu=new LinearLayout(this);menu.setOrientation(LinearLayout.VERTICAL);layout.addView(menu,new LinearLayout.LayoutParams(dp(205),-2));
+        starlightChrome(false);
+        LinearLayout layout=row();layout.setPadding(0,dp(8),0,0);content.addView(layout);
+        LinearLayout menu=new LinearLayout(this);menu.setOrientation(LinearLayout.VERTICAL);menu.setPadding(dp(4),0,dp(16),0);
+        layout.addView(menu,new LinearLayout.LayoutParams(dp(205),-2));
         Button[] selectedSection=new Button[1];
         String[] sections={"内容来源","播放与显示","应用"};
-        for(int i=0;i<sections.length;i++){final int index=i;Button entry=button(menu,sections[i],()->{settingsSection=index;showSettings();});if(i==settingsSection){entry.setBackground(PiankeUi.focus(this,true));selectedSection[0]=entry;}}
+        for(int i=0;i<sections.length;i++){final int index=i;Button entry=starlightButton(menu,sections[i],true,()->{settingsSection=index;showSettings();});entry.setSelected(i==settingsSection);if(i==settingsSection)selectedSection[0]=entry;}
         LinearLayout panel=new LinearLayout(this);panel.setOrientation(LinearLayout.VERTICAL);panel.setPadding(dp(24),dp(8),dp(12),dp(12));layout.addView(panel,new LinearLayout.LayoutParams(0,-2,1));
         if(settingsSection==0){
-            PiankeUi.entry(panel,"视频来源",sources.length()+" 个来源 · 电影、电视剧",this::showVideoSources);
-            PiankeUi.entry(panel,"直播订阅","电视频道 · M3U",()->startActivity(new Intent(this,LiveBrowseActivity.class).putExtra("openSources",true)));
+            settingRow(panel,"视频来源",sources.length()+" 个来源 · 电影、电视剧",this::showVideoSources);
         }else if(settingsSection==1){
-            RecommendationRepository recommendations=new RecommendationRepository(this);Switch enabled=new Switch(this);enabled.setText("首页推荐");enabled.setTextSize(19);enabled.setTextColor(Color.WHITE);enabled.setPadding(dp(16),dp(16),dp(16),dp(16));enabled.setChecked(recommendations.enabled());panel.addView(enabled);enabled.setOnCheckedChangeListener((v,on)->recommendations.setEnabled(on));
-            panel.addView(label("方向键选择，确认执行。播放页隐藏控制时，按方向键唤出操作；直播左右键静默切台。",16));
+            TextView hint=starlightText("方向键选择，确认执行。播放页隐藏控制时，按方向键唤出操作。",14,STEXT_3);
+            hint.setPadding(dp(8),dp(8),dp(8),dp(4));panel.addView(hint);
         }else{
-            panel.addView(PiankeUi.brand(this,96,96));panel.addView(label(PiankeUi.SLOGAN,17));
-            PiankeUi.entry(panel,"检查更新",BuildConfig.VERSION_NAME,()->startActivity(new Intent(this,UpdateActivity.class)));
-            PiankeUi.entry(panel,"关于片刻","原生影音客户端",()->PiankeUi.about(this));
+            ImageView mark=new ImageView(this);mark.setImageResource(R.drawable.spark_mark);
+            panel.addView(mark,new LinearLayout.LayoutParams(dp(64),dp(64)));
+            TextView slogan=starlightText(PiankeUi.SLOGAN,14,STEXT_3);slogan.setPadding(0,dp(10),0,dp(16));panel.addView(slogan);
+            settingRow(panel,"语音搜索",VoiceSearch.key(this).isEmpty()?"未配置 · 点此填写硅基流动 API Key":"SenseVoice 语音识别 · 已配置",this::showVoiceSettings);
+            settingRow(panel,"检查更新",BuildConfig.VERSION_NAME,()->startActivity(new Intent(this,UpdateActivity.class)));
+            settingRow(panel,"关于星光影院","原生影音客户端",()->PiankeUi.about(this));
         }
         if(selectedSection[0]!=null)selectedSection[0].requestFocus();
     }
     private void showVideoSources(){
-        page(Screen.SETTINGS,"视频来源");button(content,"‹ 返回设置",this::showSettings);button(content,"添加来源 / 扫码导入",this::showConfig);
-        if(sources.length()==0)content.addView(label("还没有视频来源。添加后即可搜索影片。",18));
+        page(Screen.SETTINGS,"视频来源");starlightChrome(false);
+        LinearLayout nav=row();content.addView(nav);
+        starlightButton(nav,"‹ 返回设置",false,this::showSettings);
+        starlightButton(nav,"添加来源 / 扫码导入",false,this::showConfig);
+        if(sources.length()==0)emptyState(content,"还没有视频来源","添加后即可搜索影片");
         for(int i=0;i<sources.length();i++){
             JSONObject source=sources.optJSONObject(i);String key=source.optString("key");
-            LinearLayout panel=row();panel.setGravity(Gravity.CENTER_VERTICAL);panel.setPadding(dp(16),dp(8),dp(16),dp(8));panel.setBackground(PiankeUi.surface(this,PiankeUi.PANEL,12));LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,-2);pp.topMargin=dp(10);content.addView(panel,pp);
-            Switch choice=new Switch(this);choice.setText(source.optString("name"));choice.setTextColor(Color.WHITE);choice.setTextSize(18);choice.setChecked(enabledSources.contains(key));panel.addView(choice,new LinearLayout.LayoutParams(0,-2,1));
+            LinearLayout panel=row();panel.setGravity(Gravity.CENTER_VERTICAL);panel.setPadding(dp(18),dp(10),dp(18),dp(10));panel.setBackground(rounded(SSURFACE,14));
+            LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,-2);pp.setMargins(dp(4),dp(10),dp(4),0);content.addView(panel,pp);
+            Switch choice=new Switch(this);choice.setText(source.optString("name"));choice.setTextColor(STEXT_1);choice.setTextSize(17);choice.setChecked(enabledSources.contains(key));
+            choice.setThumbTintList(new ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{SACCENT,STEXT_3}));
+            choice.setTrackTintList(ColorStateList.valueOf(0x332e333a));
+            panel.addView(choice,new LinearLayout.LayoutParams(0,-2,1));
             choice.setOnCheckedChangeListener((v,on)->{if(on)enabledSources.add(key);else enabledSources.remove(key);saveSourceSelection();});
-            button(panel,"更多",()->new android.app.AlertDialog.Builder(this).setTitle(source.optString("name")).setItems(new String[]{"删除来源"},(d,w)->new android.app.AlertDialog.Builder(this).setMessage("删除后不会在重启时补回，是否删除？")
+            starlightButton(panel,"更多",false,()->new android.app.AlertDialog.Builder(this).setTitle(source.optString("name")).setItems(new String[]{"删除来源"},(d,w)->new android.app.AlertDialog.Builder(this).setMessage("删除后不会在重启时补回，是否删除？")
                 .setNegativeButton("取消",null).setPositiveButton("删除",(dialog,which)->task("正在删除…",()->{client.local.removeSource(key);return client.local.sources();},list->{sources=list;results=new JSONArray();loadSourceSelection();showVideoSources();})).show()).setNegativeButton("取消",null).show());
         }
     }
@@ -483,7 +838,7 @@ public final class MainActivity extends Activity {
     }
     private void showPairing(int addressIndex) {
         if (screen != Screen.PAIRING) pairingReturn = screen;
-        page(Screen.PAIRING, "片刻   /   手机扫码配置");
+        page(Screen.PAIRING, "星光影院   /   手机扫码配置");
         content.addView(label("手机与电视连接同一网络，扫码填写 NAS 地址和密码。", 18));
         try {
             List<String> addresses = PhonePairingServer.localAddresses();
@@ -560,7 +915,7 @@ public final class MainActivity extends Activity {
             AppUpdater.validateApk(this, pendingUpdate, pendingUpdateCode);
             if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
                 new android.app.AlertDialog.Builder(this).setTitle("允许安装应用更新")
-                        .setMessage("请在接下来的系统页面允许 片刻 安装应用，然后返回继续安装。")
+                        .setMessage("请在接下来的系统页面允许 星光影院 安装应用，然后返回继续安装。")
                         .setNegativeButton("稍后", null).setPositiveButton("前往设置", (d, w) -> {
                             try { startActivityForResult(new android.content.Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
                                 android.net.Uri.parse("package:" + getPackageName())), 901); }
@@ -597,7 +952,7 @@ public final class MainActivity extends Activity {
     }
     private void updateSearchSummary() {
         if(screen!=Screen.SEARCH || searchSummary==null)return;
-        searchSummary.setText(query.isEmpty()?"输入片名开始搜索 · 收藏和进度保存在本机":
+        searchSummary.setText(query.isEmpty()?"输入片名开始搜索 · 观看进度和片单保存在本机":
             "「"+query+"」 · "+results.length()+" 个结果 · "+searchCompleted+" / "+searchTotal+" 个来源完成 · "+searchFailed+" 个不可用"+(searching?" · 正在搜索…":" · 已结束"));
         if(stopSearchButton!=null)stopSearchButton.setEnabled(searching);
     }
@@ -630,7 +985,8 @@ public final class MainActivity extends Activity {
     }
     private void loadDetail(JSONObject item, int index) { loadDetail(item,index,false); }
     private void loadDetail(JSONObject item, int index, boolean continuePlaying) {
-        Screen returnTo=screen==Screen.PLAYLIST?Screen.PLAYLIST:screen==Screen.FAVORITES?Screen.FAVORITES:Screen.SEARCH;
+        boolean fromHome=detailFromHome;
+        Screen returnTo=screen==Screen.PLAYLIST?Screen.PLAYLIST:Screen.SEARCH;
         JSONObject source = item.optJSONObject("favoriteSource");
         for (int i = 0; source == null && i < sources.length(); i++) {
             JSONObject candidate = sources.optJSONObject(i);
@@ -642,7 +998,7 @@ public final class MainActivity extends Activity {
         NasClient active = client;
         task("正在获取详情和剧集", () -> active.request(path, null), detail -> {
             selected = item; resultIndex = index; detailSource=savedSource; detailReturn=returnTo;
-            detailFromFavorites=item.has("favoriteSource");detailFavoriteId="";favoriteAvailable=false;
+            detailFromHome=fromHome;
             episodes = detail.optJSONArray("episodes");
             if (episodes == null || episodes.length() == 0) throw new Exception("此来源没有可播放集数");
             JSONObject info = detail.optJSONObject("videoInfo");
@@ -657,127 +1013,285 @@ public final class MainActivity extends Activity {
     }
     @SuppressWarnings("deprecation")
     private void showDetail() {
-        page(Screen.DETAIL, "片刻   /   影片详情");
-        button(content, detailReturn==Screen.PLAYLIST?"‹ 返回播放列表":detailReturn==Screen.FAVORITES?"‹ 返回本机收藏夹":"‹ 返回搜索结果 / 选择其他来源", this::returnFromDetail);
-        LinearLayout hero = row(); hero.setPadding(dp(4), dp(16), dp(4), dp(20)); content.addView(hero);
-        ImageView cover = new ImageView(this); cover.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        hero.addView(cover, new LinearLayout.LayoutParams(dp(146), dp(204)));
+        page(Screen.DETAIL, "星光影院   /   影片详情");
+        starlightChrome();
         String coverUrl = detailInfo.optString("cover");
-        posters.load(cover, client, coverUrl.isEmpty() ? selected.optString("pic") : coverUrl);
-        LinearLayout info = new LinearLayout(this); info.setOrientation(LinearLayout.VERTICAL); info.setPadding(dp(22), 0, 0, 0);
-        hero.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
-        TextView name = label(title, 29); name.setMaxLines(2); info.addView(name);
-        String summary = detailInfo.optString("year") + "  " + detailInfo.optString("area") + "  " + detailInfo.optString("typeName");
-        if (!summary.trim().isEmpty()) info.addView(label(summary.trim(), 16));
-        TextView source = label(selected.optString("sourceName") + "   ·   共 " + episodes.length() + " 集", 16);
-        source.setTextColor(PiankeUi.PINK); info.addView(source);
-        TextView description = label("", 16); description.setMaxLines(3);
+        String artwork = coverUrl.isEmpty() ? selected.optString("pic") : coverUrl;
+
+        /* —— 剧照 Hero：背景剧照 + 左侧/底部渐变遮罩 + 竖版海报 + 信息 —— */
+        FrameLayout hero = new FrameLayout(this); clipRounded(hero, 20);
+        content.addView(hero, new LinearLayout.LayoutParams(-1, -2));
+        hero.setMinimumHeight(dp(360));
+        ImageView backdrop = new ImageView(this); backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        hero.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
+        posters.load(backdrop, client, artwork);
+        View veil = new View(this);
+        veil.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xf20e0f11, 0xd90e0f11, 0x260e0f11}));
+        hero.addView(veil, new FrameLayout.LayoutParams(-1, -1));
+        View shade = new View(this);
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xf20e0f11, 0x000e0f11}));
+        hero.addView(shade, new FrameLayout.LayoutParams(-1, dp(180), Gravity.BOTTOM));
+
+        LinearLayout heroBody = new LinearLayout(this); heroBody.setOrientation(LinearLayout.HORIZONTAL);
+        heroBody.setGravity(Gravity.BOTTOM); heroBody.setPadding(dp(30), dp(24), dp(30), dp(26));
+        hero.addView(heroBody, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
+
+        Button back = new Button(this);
+        back.setText(detailFromHome ? "‹   返回首页" : detailReturn == Screen.PLAYLIST ? "‹   返回播放列表" : "‹   返回搜索结果");
+        back.setAllCaps(false); back.setTextSize(14);
+        back.setMinWidth(0); back.setMinimumWidth(0); back.setMinHeight(0); back.setMinimumHeight(0);
+        back.setPadding(dp(16), 0, dp(16), 0); back.setFocusableInTouchMode(true);
+        back.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}}, new int[]{SACCENT, STEXT_1}));
+        back.setBackground(selectable(0x73000000, 999));
+        back.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(6) : 0));
+        back.setOnClickListener(v -> { if (!busy) returnFromDetail(); });
+        FrameLayout.LayoutParams backParams = new FrameLayout.LayoutParams(-2, dp(40), Gravity.TOP | Gravity.START);
+        backParams.setMargins(dp(24), dp(20), 0, 0); hero.addView(back, backParams);
+
+        FrameLayout posterFrame = new FrameLayout(this); posterFrame.setBackground(rounded(SSURFACE, 14)); clipRounded(posterFrame, 14);
+        heroBody.addView(posterFrame, new LinearLayout.LayoutParams(dp(168), dp(238)));
+        ImageView poster = new ImageView(this); poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        posterFrame.addView(poster, new FrameLayout.LayoutParams(-1, -1)); posters.load(poster, client, artwork);
+
+        LinearLayout info = new LinearLayout(this); info.setOrientation(LinearLayout.VERTICAL);
+        info.setPadding(dp(30), 0, 0, 0);
+        heroBody.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+        LinearLayout kicker = row(); info.addView(kicker);
+        TextView sourceName = starlightText(selected.optString("sourceName"), 13, SACCENT);
+        sourceName.setLetterSpacing(0.08f); sourceName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        kicker.addView(sourceName);
+        kicker.addView(starlightText("   ·   全 " + episodes.length() + " 集", 13, STEXT_3));
+
+        TextView name = starlightText(title, 34, STEXT_1); name.setMaxLines(2);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(8), 0, 0);
+        info.addView(name);
+
+        String summary = (detailInfo.optString("year") + "   " + detailInfo.optString("area") + "   " + detailInfo.optString("typeName")).trim();
+        if (!summary.isEmpty()) {
+            TextView meta = starlightText(summary.replaceAll("\\s+", "   ").trim(), 15, STEXT_2);
+            meta.setPadding(0, dp(8), 0, 0); info.addView(meta);
+        }
+
+        TextView description = starlightText("", 14, STEXT_2); description.setMaxLines(3);
+        description.setEllipsize(android.text.TextUtils.TruncateAt.END); description.setLineSpacing(dp(4), 1f);
         String desc = detailInfo.optString("desc");
         description.setText(desc.isEmpty() ? "选好剧集，开始观看。" : Html.fromHtml(desc));
-        description.setTextColor(Color.rgb(175, 190, 207)); info.addView(description);
-        PlaybackStore store=new PlaybackStore(this);JSONObject saved=store.find(detailSource,selected);
-        int resumeIndex=saved!=null&&saved.optInt("index")>=0&&saved.optInt("index")<episodes.length()?saved.optInt("index"):0;
-        if(saved!=null){info.addView(label(PiankeUi.position(saved),15));PiankeUi.progress(info,saved);}
-        LinearLayout actions=row();info.addView(actions);Button primary=button(actions,saved==null?"开始观看":"继续播放",()->preparePlayback(resumeIndex));primary.setBackground(PiankeUi.focus(this,true));
-        favoriteButton=button(actions,"正在读取收藏状态…",()->toggleFavorite());favoriteButton.setEnabled(false);readFavoriteState();
-        boolean listed=store.contains(detailSource,selected);
-        button(actions,listed?"移出片单":"加入片单",()->task("正在保存片单",()->{if(listed)store.remove(PlaybackStore.identity(detailSource,selected));else store.add(detailSource,selected,title);return true;},ok->showDetail()));
-        content.addView(label("选择剧集", 21));
-        TextView skipInfo = label(SegmentSkipStore.summary(this, title), 16);
-        skipInfo.setTextColor(PiankeUi.PINK); content.addView(skipInfo);
+        description.setPadding(0, dp(12), 0, 0); info.addView(description);
+
+        PlaybackStore store = new PlaybackStore(this); JSONObject saved = store.find(detailSource, selected);
+        int resumeIndex = saved != null && saved.optInt("index") >= 0 && saved.optInt("index") < episodes.length() ? saved.optInt("index") : 0;
+        if (saved != null) {
+            TextView resume = starlightText(PiankeUi.position(saved), 13, STEXT_3);
+            resume.setPadding(0, dp(10), 0, 0); info.addView(resume);
+            starlightProgress(info, saved);
+        }
+
+        LinearLayout actions = row(); actions.setGravity(Gravity.CENTER_VERTICAL); info.addView(actions);
+        detailButton(actions, saved == null ? "▶   开始观看" : "▶   继续播放", true, () -> preparePlayback(resumeIndex));
+        boolean listed = store.contains(detailSource, selected);
+        detailButton(actions, listed ? "移出片单" : "加入片单", false, () -> task("正在保存片单", () -> { if (listed) store.remove(PlaybackStore.identity(detailSource, selected)); else store.add(detailSource, selected, title); return true; }, ok -> showDetail()));
+        detailButton(actions, "切换来源", false, this::showSourcePicker);
+
+        /* —— 选集 —— */
+        LinearLayout section = row(); section.setGravity(Gravity.BOTTOM);
+        section.setPadding(0, dp(28), 0, dp(10)); content.addView(section);
+        TextView sectionTitle = starlightText("选集", 26, STEXT_1);
+        sectionTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        section.addView(sectionTitle, new LinearLayout.LayoutParams(0, -2, 1));
+        section.addView(starlightText("共 " + episodes.length() + " 集", 13, STEXT_3));
+        TextView skipInfo = starlightText(SegmentSkipStore.summary(this, title), 13, STEXT_3);
+        skipInfo.setPadding(0, 0, 0, dp(8)); content.addView(skipInfo);
+
         int columns = getResources().getConfiguration().screenWidthDp >= 900 ? 8 : 6;
         GridLayout grid = new GridLayout(this); grid.setColumnCount(columns); content.addView(grid);
         ArrayList<Button> buttons = new ArrayList<>();
+        int gap = dp(8), available = getResources().getDisplayMetrics().widthPixels - dp(80);
+        int width = Math.max(dp(88), (available - gap * (columns - 1)) / columns);
         for (int i = 0; i < episodes.length(); i++) {
             int index = i;
-            Button episode = new Button(this); episode.setText("第 " + (i + 1) + " 集"); episode.setTextSize(17);
-            episode.setFocusableInTouchMode(true); episode.setAllCaps(false); episode.setTextColor(Color.WHITE); episode.setBackground(PiankeUi.focus(this,i==episodeIndex));
-            int width = (getResources().getConfiguration().screenWidthDp - 80) / columns;
-            GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.width = dp(width - 10); params.height = dp(50);
-            params.setMargins(dp(4), dp(5), dp(4), dp(5)); grid.addView(episode, params);
+            boolean current = i == resumeIndex;
+            Button episode = new Button(this);
+            episode.setText(current ? "第 " + (i + 1) + " 集 · 继续" : "第 " + (i + 1) + " 集");
+            episode.setTextSize(15); episode.setAllCaps(false); episode.setGravity(Gravity.CENTER);
+            episode.setContentDescription("第 " + (i + 1) + " 集");
+            episode.setFocusableInTouchMode(true);
+            episode.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}}, new int[]{SACCENT, current ? SACCENT : STEXT_2}));
+            episode.setBackground(episodeState(current));
+            episode.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(6) : 0));
+            GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.width = width; params.height = dp(56);
+            params.setMargins(i % columns == 0 ? 0 : gap, dp(4), 0, dp(4)); grid.addView(episode, params);
             episode.setOnClickListener(v -> { if (!busy) preparePlayback(index); }); buttons.add(episode);
         }
         if (!buttons.isEmpty()) buttons.get(Math.min(episodeIndex, buttons.size() - 1)).requestFocus();
+        renderRelated();
     }
-    private void showFavorites() {
-        NasClient active=client;
-        task("正在读取收藏",()->active.request("/api/favorites",null),response->{
-            page(Screen.FAVORITES,"我的收藏");JSONArray list=response.optJSONArray("items");
-            button(content,"‹ 返回首页",this::homeOrSearch);
-            if(list==null||list.length()==0){content.addView(label("还没有收藏。喜欢的影片，点一下收藏就会出现在这里。",19));return;}
-            button(content,"管理收藏",()->{
-                String[] names=new String[list.length()];for(int j=0;j<list.length();j++)names[j]=list.optJSONObject(j).optJSONObject("item").optString("name");
-                new android.app.AlertDialog.Builder(this).setTitle("选择要管理的收藏").setItems(names,(d,w)->favoriteMenu(list.optJSONObject(w))).setNegativeButton("取消",null).show();
-            });
-            int columns=getResources().getConfiguration().screenWidthDp>=1000?5:4;LinearLayout line=null;
-            for(int i=0;i<list.length();i++){
-                if(i%columns==0){line=row();content.addView(line);}JSONObject entry=list.getJSONObject(i),item=new JSONObject(entry.getJSONObject("item").toString()).put("favoriteSource",entry.getJSONObject("source"));
-                LinearLayout card=libraryCard(line,item.optString("name"),item.optString("pic"),new PlaybackStore(this).find(entry.getJSONObject("source"),item),()->loadDetail(item,0));
-                card.setOnLongClickListener(v->{favoriteMenu(entry);return true;});
+    /** 同类推荐：由当前影片分类驱动，卡片直接进入对应详情。 */
+    private void renderRelated() {
+        String matched = DiscoveryRepository.section(detailInfo.optString("typeName"));
+        if (matched.isEmpty()) matched = DiscoveryRepository.section(selected == null ? "" : selected.optString("typeName"));
+        if (matched.isEmpty() || discovery == null) return;
+        final String section = matched;
+        LinearLayout titleRow = row(); titleRow.setPadding(0, dp(30), 0, dp(12)); content.addView(titleRow);
+        TextView label = starlightText("同类推荐 · " + section, 23, STEXT_1);
+        label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        titleRow.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
+        TextView status = starlightText("正在加载…", 13, STEXT_3); titleRow.addView(status);
+        LinearLayout cards = row(); content.addView(cards);
+        int ticket = generation; String excluded = title;
+        relatedWorker.execute(() -> {
+            try {
+                JSONArray items = discovery.related(section, excluded, 8);
+                main.post(() -> {
+                    if (ticket != generation || screen != Screen.DETAIL || isFinishing() || isDestroyed()) return;
+                    status.setText(items.length() == 0 ? "暂无同类内容" : "");
+                    for (int i = 0; i < items.length(); i++) {
+                        JSONObject item = items.optJSONObject(i); if (item == null) continue;
+                        PosterCard card = new PosterCard(this, dp(120));
+                        card.title.setText(item.optString("name"));
+                        card.source.setText(item.optString("sourceName"));
+                        String extra = item.optString("year"), remarks = item.optString("remarks");
+                        card.metadata.setText(extra.isEmpty() ? remarks : remarks.isEmpty() ? extra : extra + "  ·  " + remarks);
+                        card.setContentDescription(item.optString("name") + "，" + item.optString("sourceName"));
+                        posters.loadPublic(card.image, item.optString("pic"), R.drawable.poster_placeholder);
+                        card.setOnClickListener(v -> { if (!busy) loadDetail(item, 0); });
+                        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(168), -2);
+                        lp.setMargins(dp(4), dp(4), dp(4), dp(6)); cards.addView(card, lp);
+                    }
+                });
+            } catch (Exception ex) {
+                main.post(() -> { if (ticket == generation && screen == Screen.DETAIL) status.setText("同类推荐暂时无法加载"); });
             }
         });
-    }
-    private LinearLayout libraryCard(LinearLayout parent,String title,String coverUrl,JSONObject saved,Runnable action){
-        LinearLayout card=new LinearLayout(this);card.setOrientation(LinearLayout.VERTICAL);card.setPadding(dp(8),dp(8),dp(8),dp(10));card.setBackground(PiankeUi.focus(this,false));card.setFocusableInTouchMode(true);card.setClickable(true);card.setContentDescription(title);card.setOnClickListener(v->{if(!busy)action.run();});
-        int columns=getResources().getConfiguration().screenWidthDp>=1000?5:4;int width=(getResources().getConfiguration().screenWidthDp-100)/columns;
-        LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(dp(width),-2);p.setMargins(dp(3),dp(8),dp(3),dp(8));parent.addView(card,p);
-        ImageView cover=new ImageView(this);cover.setScaleType(ImageView.ScaleType.CENTER_CROP);card.addView(cover,new LinearLayout.LayoutParams(-1,dp(175)));posters.load(cover,client,coverUrl);
-        TextView name=label(title,17);name.setMaxLines(2);card.addView(name);TextView status=label(PiankeUi.position(saved),13);status.setTextColor(PiankeUi.SECONDARY);card.addView(status);PiankeUi.progress(card,saved);return card;
-    }
-    private void favoriteMenu(JSONObject entry){
-        new android.app.AlertDialog.Builder(this).setTitle(entry.optJSONObject("item").optString("name")).setItems(new String[]{"加入播放列表","移除收藏"},(d,w)->{
-            if(w==0)task("正在保存",()->{new PlaybackStore(this).add(entry.getJSONObject("source"),entry.getJSONObject("item"),entry.getJSONObject("item").optString("name"));return true;},ok->setNotice("已加入播放列表"));
-            else new android.app.AlertDialog.Builder(this).setMessage("移除这个收藏？观看进度会保留。") .setNegativeButton("取消",null).setPositiveButton("移除",(dialog,which)->task("正在移除",()->{client.local.favorites("/api/favorites/"+entry.getString("id"),null,"DELETE");return true;},ok->showFavorites())).show();
-        }).setNegativeButton("取消",null).show();
     }
     private void homeOrSearch(){
         String destination=getIntent().getStringExtra("tvDestination");
         if(destination!=null&&!destination.equals("search"))finish();else showSearch();
     }
     private void returnFromDetail() {
-        if("resume".equals(getIntent().getStringExtra("tvDestination"))){finish();return;}
-        if(detailReturn==Screen.PLAYLIST)showPlaylist();else if(detailReturn==Screen.FAVORITES)showFavorites();else showSearch();
+        if("resume".equals(getIntent().getStringExtra("tvDestination"))||detailFromHome){finish();return;}
+        if(detailReturn==Screen.PLAYLIST)showPlaylist();else showSearch();
     }
     private void showPlaylist() {
-        page(Screen.PLAYLIST,"我的片单");Button back=button(content,"‹ 返回首页",this::homeOrSearch);
+        page(Screen.PLAYLIST,"我的片单");starlightChrome(false);
+        LinearLayout nav=row();content.addView(nav);
+        Button back=starlightButton(nav,"‹ 返回首页",false,this::homeOrSearch);
         PlaybackStore store=new PlaybackStore(this);JSONArray list=store.playlist();View first=null;
-        if(list.length()==0)content.addView(label("片单还是空的，去找一部想看的吧。",21));
+        if(list.length()==0)emptyState(content,"片单还是空的","去找一部想看的吧");
         try {for(int i=0;i<list.length();i++) {
             JSONObject entry=list.getJSONObject(i),source=entry.getJSONObject("source"),item=new JSONObject(entry.getJSONObject("item").toString()).put("favoriteSource",source);JSONObject saved=store.find(source,item);
-            LinearLayout panel=row();panel.setGravity(Gravity.CENTER_VERTICAL);panel.setPadding(dp(16),dp(12),dp(16),dp(12));panel.setBackground(PiankeUi.surface(this,PiankeUi.PANEL,14));LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,-2);pp.topMargin=dp(12);content.addView(panel,pp);
-            ImageView art=new ImageView(this);art.setScaleType(ImageView.ScaleType.CENTER_CROP);panel.addView(art,new LinearLayout.LayoutParams(dp(66),dp(94)));posters.load(art,client,item.optString("pic"));
-            LinearLayout copy=new LinearLayout(this);copy.setOrientation(LinearLayout.VERTICAL);copy.setPadding(dp(16),0,dp(16),0);panel.addView(copy,new LinearLayout.LayoutParams(0,-2,1));copy.addView(label(entry.optString("title"),21));copy.addView(label(PiankeUi.position(saved),15));PiankeUi.progress(copy,saved);
-            Button play=button(panel,saved==null?"开始播放":"继续播放",()->loadDetail(item,0,true));if(first==null)first=play;
-            button(panel,"更多",()->new android.app.AlertDialog.Builder(this).setTitle(entry.optString("title")).setItems(new String[]{"查看剧集","移出列表"},(d,w)->{
+            LinearLayout panel=row();panel.setGravity(Gravity.CENTER_VERTICAL);panel.setPadding(dp(14),dp(12),dp(14),dp(12));
+            panel.setBackground(rounded(SSURFACE,14));LinearLayout.LayoutParams pp=new LinearLayout.LayoutParams(-1,-2);pp.setMargins(dp(4),dp(10),dp(4),0);content.addView(panel,pp);
+            ImageView art=new ImageView(this);art.setScaleType(ImageView.ScaleType.CENTER_CROP);clipRounded(art,10);
+            panel.addView(art,new LinearLayout.LayoutParams(dp(66),dp(92)));posters.load(art,client,item.optString("pic"));
+            LinearLayout copy=new LinearLayout(this);copy.setOrientation(LinearLayout.VERTICAL);copy.setPadding(dp(16),0,dp(16),0);panel.addView(copy,new LinearLayout.LayoutParams(0,-2,1));
+            TextView name=starlightText(entry.optString("title"),19,STEXT_1);name.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));copy.addView(name);
+            TextView status=starlightText(PiankeUi.position(saved),13,STEXT_3);status.setPadding(0,dp(4),0,0);copy.addView(status);starlightProgress(copy,saved);
+            Button play=starlightSmallPrimary(panel,saved==null?"开始播放":"继续播放",()->loadDetail(item,0,true));if(first==null)first=play;
+            starlightButton(panel,"更多",false,()->new android.app.AlertDialog.Builder(this).setTitle(entry.optString("title")).setItems(new String[]{"查看剧集","移出列表"},(d,w)->{
                 if(w==0)loadDetail(item,0);else new android.app.AlertDialog.Builder(this).setMessage("移出片单？观看历史和进度会保留。") .setNegativeButton("取消",null).setPositiveButton("移出",(dialog,which)->task("正在移除",()->{store.remove(entry.getString("id"));return true;},ok->showPlaylist())).show();
             }).setNegativeButton("取消",null).show());
         }}catch(Exception e){error(e);}if(first!=null)first.requestFocus();else back.requestFocus();
     }
-    private void readFavoriteState() {
-        NasClient active=client;JSONObject source=detailSource,item=selected;int ticket=generation;
-        network.execute(()->{
+    /** 切换来源：立即弹出弹窗并边扫描边把每个来源的结果追加进去。 */
+    private void showSourcePicker() {
+        JSONObject current = detailSource;
+        String currentKey = current == null ? "" : current.optString("key");
+        String currentId = selected == null ? "" : selected.optString("vodId");
+        JSONArray chosen = new JSONArray();
+        try {
+            for (int i = 0; i < sources.length(); i++) {
+                JSONObject source = sources.optJSONObject(i);
+                if (source != null && enabledSources.contains(source.getString("key"))) chosen.put(new JSONObject(source.toString()));
+            }
+        } catch (Exception ignored) { }
+        if (chosen.length() == 0) { setNotice("请先在设置中启用至少一个来源"); return; }
+        final String keyword = title;
+        final int total = chosen.length();
+
+        LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(22), dp(6), dp(22), dp(6));
+        TextView status = starlightText("正在扫描 " + total + " 个来源…", 15, STEXT_2);
+        panel.addView(status);
+        LinearLayout list = new LinearLayout(this); list.setOrientation(LinearLayout.VERTICAL);
+        ScrollView options = new ScrollView(this); options.addView(list);
+        panel.addView(options, new LinearLayout.LayoutParams(-1, dp(320)));
+        final android.app.AlertDialog dialog = new android.app.AlertDialog.Builder(this)
+                .setTitle("切换来源 · " + keyword)
+                .setView(panel)
+                .setNegativeButton("关闭", null)
+                .create();
+        final int token = ++sourcePickerToken;
+        dialog.setOnDismissListener(d -> { if (token == sourcePickerToken) sourcePickerToken++; });
+        dialog.show();
+
+        sourceScans.execute(() -> {
             try {
-                JSONArray list=active.request("/api/favorites",null).optJSONArray("items");String id="";
-                if(list!=null)for(int i=0;i<list.length();i++) {
-                    JSONObject entry=list.getJSONObject(i);
-                    if(entry.getJSONObject("item").optString("vodId").equals(item.optString("vodId"))
-                        && entry.getJSONObject("source").optString("url").replaceAll("/+$","").equals(source.optString("url").replaceAll("/+$","")))id=entry.optString("id");
-                }
-                String found=id;
-                main.post(()->{if(ticket!=generation || (screen!=Screen.DETAIL && screen!=Screen.PLAYER))return;
-                    detailFavoriteId=found;favoriteAvailable=true;favoriteButton.setEnabled(true);favoriteButton.setText(found.isEmpty()?"收藏":"取消收藏");});
-            } catch(Exception ex) { main.post(()->{if(ticket==generation && (screen==Screen.DETAIL || screen==Screen.PLAYER)) {favoriteButton.setText("收藏暂不可用");setNotice("无法读取本机收藏，请返回重试。");}}); }
+                client.local.search(keyword, chosen, (items, completed, count, failed) -> main.post(() -> {
+                    if (token != sourcePickerToken) return;
+                    int added = 0;
+                    for (int i = 0; i < items.length(); i++) {
+                        JSONObject item = items.optJSONObject(i);
+                        if (item == null) continue;
+                        if (currentKey.equals(item.optString("sourceKey")) && currentId.equals(item.optString("vodId"))) continue;
+                        addSourceOption(list, item, dialog);
+                        added++;
+                    }
+                    int found = list.getChildCount();
+                    if (completed >= count) {
+                        status.setText(found == 0 ? "扫描完成 · 没有找到其他可用来源"
+                                : "扫描完成 · 找到 " + found + " 个可用来源" + (failed > 0 ? " · " + failed + " 个来源不可用" : ""));
+                    } else {
+                        status.setText("已扫描 " + completed + " / " + count + " 个来源 · 找到 " + found + " 个" + (added == 0 ? "，正在继续扫描…" : ""));
+                    }
+                }));
+            } catch (Exception ex) {
+                main.post(() -> {
+                    if (token == sourcePickerToken) status.setText("扫描失败：" + (ex.getMessage() == null ? "来源不可用" : ex.getMessage()));
+                });
+            }
         });
     }
-    private void toggleFavorite() {
-        if(!favoriteAvailable)return;
-        NasClient active=client;String id=detailFavoriteId;JSONObject source=detailSource,item=selected;
-        task(id.isEmpty()?"正在加入本机收藏夹":"正在取消收藏",()->{
-            if(!id.isEmpty()) { active.request("/api/favorites/"+NasClient.encode(id),null,"DELETE");return ""; }
-            JSONObject payload=new JSONObject().put("source",source).put("item",new JSONObject(item.toString()));
-            payload.getJSONObject("item").put("pic",detailInfo.optString("cover",item.optString("pic")));
-            return active.request("/api/favorites",payload).getJSONObject("item").getString("id");
-        },saved->{detailFavoriteId=saved;favoriteButton.setText(saved.isEmpty()?"收藏":"取消收藏");setNotice(saved.isEmpty()?"已取消收藏":"已收藏，保存在此设备");});
+    /** 向弹窗追加一个可切换的来源。 */
+    private void addSourceOption(LinearLayout list, JSONObject item, android.app.AlertDialog dialog) {
+        Button option = new Button(this);
+        String remarks = item.optString("remarks");
+        option.setText(item.optString("sourceName") + (remarks.isEmpty() ? "" : "  ·  " + remarks));
+        option.setAllCaps(false); option.setTextSize(16); option.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
+        option.setMinWidth(0); option.setMinimumWidth(0); option.setMinHeight(dp(48)); option.setMinimumHeight(dp(48));
+        option.setPadding(dp(16), dp(8), dp(16), dp(8)); option.setFocusableInTouchMode(true);
+        option.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}}, new int[]{SACCENT, STEXT_1}));
+        option.setBackground(selectable(SSURFACE, 12));
+        option.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(4) : 0));
+        option.setOnClickListener(v -> { dialog.dismiss(); switchDetailSource(item); });
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, -2);
+        lp.setMargins(0, dp(4), 0, dp(4)); list.addView(option, lp);
+        if (list.getChildCount() == 1) option.post(option::requestFocus);
+    }
+    /** 在详情页原地切换到另一个来源，保留返回路径与搜索结果位置。 */
+    private void switchDetailSource(JSONObject item) {
+        JSONObject source = item.optJSONObject("favoriteSource");
+        for (int i = 0; source == null && i < sources.length(); i++) {
+            JSONObject candidate = sources.optJSONObject(i);
+            if (candidate != null && candidate.optString("key").equals(item.optString("sourceKey"))) source = candidate;
+        }
+        if (source == null) { setNotice("该来源已不可用，请重新扫描"); return; }
+        String path = "/api/detail?id=" + NasClient.encode(item.optString("vodId")) + "&source=" + NasClient.encode(source.toString());
+        JSONObject target = source;
+        NasClient active = client;
+        task("正在切换视频来源", () -> active.request(path, null), detail -> {
+            episodes = detail.optJSONArray("episodes");
+            if (episodes == null || episodes.length() == 0) throw new Exception("该来源没有可播放集数");
+            selected = item; detailSource = target;
+            JSONObject info = detail.optJSONObject("videoInfo");
+            detailInfo = info == null ? new JSONObject() : info;
+            title = info == null ? item.optString("name") : info.optString("title", item.optString("name"));
+            JSONObject saved = new PlaybackStore(this).find(detailSource, selected);
+            episodeIndex = saved == null ? 0 : saved.optInt("index");
+            if (episodeIndex < 0 || episodeIndex >= episodes.length()) episodeIndex = 0;
+            showDetail();
+        });
     }
     private void preparePlayback(int index) { preparePlayback(index,true); }
     private void preparePlayback(int index, boolean restore) {
@@ -803,18 +1317,16 @@ public final class MainActivity extends Activity {
         playerTop = new LinearLayout(this); playerTop.setOrientation(LinearLayout.VERTICAL);
         playerTop.setPadding(dp(40), dp(20), dp(40), dp(34)); playerTop.setBackgroundResource(R.drawable.player_top);
         LinearLayout heading=row();playerTop.addView(heading);
-        heading.addView(label(title + "   ·   第 " + (episodeIndex + 1) + " 集 / 共 "+episodes.length()+" 集",26),new LinearLayout.LayoutParams(0,-2,1));
-        favoriteButton=button(heading,favoriteAvailable?(detailFavoriteId.isEmpty()?"收藏":"取消收藏"):"收藏暂不可用",()->toggleFavorite());
-        favoriteButton.setBackground(PlayerStyle.background(this,false));PlayerStyle.setIcon(favoriteButton,"star",24);
-        favoriteButton.setEnabled(favoriteAvailable);
-        if(!favoriteAvailable)readFavoriteState();
+        TextView headingTitle=label(title + "   ·   第 " + (episodeIndex + 1) + " 集 / 共 "+episodes.length()+" 集",26);
+        headingTitle.setTextColor(PlayerStyle.TEXT);
+        heading.addView(headingTitle,new LinearLayout.LayoutParams(0,-2,1));
         message = label("正在连接…", 15); playerTop.addView(message);
         stage.addView(playerTop, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
         playerControls = new LinearLayout(this); playerControls.setOrientation(LinearLayout.VERTICAL);
         playerControls.setPadding(dp(40), dp(16), dp(40), dp(12)); playerControls.setBackgroundResource(R.drawable.player_bottom);
-        playbackStatus = label("正在缓冲", 16); playerControls.addView(playbackStatus);
+        playbackStatus = label("正在缓冲", 16); playbackStatus.setTextColor(PlayerStyle.TEXT); playerControls.addView(playbackStatus);
         playbackProgress = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
-        playbackProgress.setMax(1000); playbackProgress.setProgressTintList(ColorStateList.valueOf(PlayerStyle.PINK));playbackProgress.setProgressBackgroundTintList(ColorStateList.valueOf(0x66aab5c5));
+        playbackProgress.setMax(1000); playbackProgress.setProgressTintList(ColorStateList.valueOf(PlayerStyle.ACCENT));playbackProgress.setProgressBackgroundTintList(ColorStateList.valueOf(0x33383c42));
         LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(-1, dp(5)); progressParams.setMargins(dp(5), dp(4), dp(5), dp(8));
         playerControls.addView(playbackProgress, progressParams);
         LinearLayout controls = new LinearLayout(this);playerControls.addView(controls);
@@ -828,7 +1340,8 @@ public final class MainActivity extends Activity {
         subtitleButton=playerAction(settings,"字幕","subtitle",()->{if(subtitleMenu!=null){main.removeCallbacks(hidePlayerControls);subtitleMenu.show();}});
         playerAction(settings,"更多","more",this::showPlayerOptions);
         playerAction(settings,"返回选集","episodes",this::leavePlayer);
-        autoNext=new CheckBox(this);autoNext.setText("自动下一集");autoNext.setTextColor(Color.WHITE);
+        autoNext=new CheckBox(this);autoNext.setText("自动下一集");autoNext.setTextColor(PlayerStyle.TEXT);
+        autoNext.setButtonTintList(ColorStateList.valueOf(PlayerStyle.ACCENT));
         autoNext.setChecked(getPreferences(MODE_PRIVATE).getBoolean("autoNext",true));
         autoNext.setOnCheckedChangeListener((v,on)->getPreferences(MODE_PRIVATE).edit().putBoolean("autoNext",on).apply());
         segmentSkip = new SegmentSkipController(this, title, () -> {showControls(false); main.removeCallbacks(hidePlayerControls);}, () -> showControls(false), this::finishSkippedTvEpisode);
@@ -836,7 +1349,7 @@ public final class MainActivity extends Activity {
         TextView hint=label("收起时：左右快退 / 快进，长按加速 · 上下唤出 · 返回收起",13);hint.setTextColor(PlayerStyle.MUTED);hint.setGravity(Gravity.CENTER);hint.setPadding(0,dp(8),0,0);playerControls.addView(hint);
         stage.addView(playerControls, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
         seekPreview=label("",20);seekPreview.setGravity(Gravity.CENTER);seekPreview.setPadding(dp(24),dp(12),dp(24),dp(12));
-        seekPreview.setBackground(PlayerStyle.surface(0xcc101723,12,this));seekPreview.setVisibility(View.GONE);
+        seekPreview.setBackground(PlayerStyle.surface(0xcc0e0f11,12,this));seekPreview.setVisibility(View.GONE);
         stage.addView(seekPreview,new FrameLayout.LayoutParams(-2,-2,Gravity.CENTER));
         setContentView(stage); controlsVisible = true;
         playerView.setOnClickListener(v -> { if (controlsVisible) hideControls(); else showControls(true); });
@@ -1014,12 +1527,11 @@ public final class MainActivity extends Activity {
     @SuppressWarnings("deprecation") @Override public void onBackPressed() {
         if (busy) { generation++; busy = false; setNotice("已取消等待，可重试"); return; }
         String destination=getIntent().getStringExtra("tvDestination");
-        if((screen==Screen.FAVORITES&&"favorites".equals(destination))||(screen==Screen.PLAYLIST&&"playlist".equals(destination))||(screen==Screen.SETTINGS&&"settings".equals(destination))){finish();return;}
+        if((screen==Screen.PLAYLIST&&"playlist".equals(destination))||(screen==Screen.SETTINGS&&"settings".equals(destination))){finish();return;}
         switch (screen) {
             case PLAYER: if (controlsVisible) hideControls(); else leavePlayer(); break;
             case DETAIL: returnFromDetail(); break;
             case PLAYLIST: showSearch(); break;
-            case FAVORITES: showSearch(); break;
             case SETTINGS: showSearch(); break;
             case PAIRING: returnFromPairing(); break;
             case LOGIN: showConfig(); break;
@@ -1030,7 +1542,7 @@ public final class MainActivity extends Activity {
     @Override protected void onStart() { super.onStart(); stopped = false; if (screen == Screen.PLAYER) startPlayer(); }
     @Override protected void onPause() { saveTvProgress(); super.onPause(); }
     @Override protected void onStop() { stopped = true; if (screen == Screen.PAIRING) { closePairing(); setNotice("配置已暂停，请重新生成二维码。"); } releasePlayer(); super.onStop(); }
-    @Override protected void onDestroy() { closePairing(); cancelSearch(); searches.shutdownNow(); generation++; network.shutdownNow(); updateChecks.shutdownNow(); posters.close(); main.removeCallbacksAndMessages(null); super.onDestroy(); }
+    @Override protected void onDestroy() { closePairing(); cancelSearch(); searches.shutdownNow(); sourceScans.shutdownNow(); relatedWorker.shutdownNow(); generation++; network.shutdownNow(); updateChecks.shutdownNow(); posters.close(); main.removeCallbacksAndMessages(null); super.onDestroy(); }
     private static String time(long ms) {
         if (ms < 0) return "--:--";
         return String.format(Locale.ROOT, "%02d:%02d", ms / 60000, ms / 1000 % 60);

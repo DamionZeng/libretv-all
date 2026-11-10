@@ -82,7 +82,7 @@ public final class UpdateInstallCompatibilityTest extends TestCase {
         while(SystemClock.uptimeMillis()<end){
             android.view.accessibility.AccessibilityNodeInfo root=instrument.getUiAutomation().getRootInActiveWindow();
             if(root!=null&&String.valueOf(root.getPackageName()).contains("packageinstaller")){
-                installer=!root.findAccessibilityNodeInfosByText("片刻").isEmpty()&&!root.findAccessibilityNodeInfosByText("Install").isEmpty();if(installer)break;
+                installer=!root.findAccessibilityNodeInfosByText("星光影院").isEmpty()&&!root.findAccessibilityNodeInfosByText("Install").isEmpty();if(installer)break;
             }
             Thread.sleep(100);
         }

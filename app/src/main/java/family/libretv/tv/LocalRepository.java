@@ -143,7 +143,6 @@ final class LocalRepository {
         String route=path.split("\\?",2)[0];Map<String,String> q=query(path);
         if(route.equals("/api/search"))return search(body.getString("wd"),body.optJSONArray("sources"));
         if(route.equals("/api/detail"))return detail(q.get("id"),new JSONObject(q.get("source")));
-        if(route.equals("/api/favorites") || route.startsWith("/api/favorites/"))return favorites(route,body,method);
         throw new IOException("独立版不使用此 NAS 接口");
     }
     interface SearchListener {
@@ -243,17 +242,5 @@ final class LocalRepository {
         JSONObject info=new JSONObject().put("sourceKey",source.getString("key")).put("sourceName",source.getString("name")).put("sourceUrl",source.getString("url"));
         if(vod!=null){String[][] fields={{"title","vod_name"},{"cover","vod_pic"},{"desc","vod_content"},{"year","vod_year"},{"area","vod_area"},{"remarks","vod_remarks"}};for(String[] f:fields)info.put(f[0],vod.optString(f[1]));}
         return new JSONObject().put("episodes",eps).put("videoInfo",info);
-    }
-    synchronized JSONObject favorites(String route,JSONObject body,String method)throws Exception{
-        JSONArray all=new JSONArray(prefs.getString("favorites","[]"));
-        if(method.equals("GET"))return new JSONObject().put("items",all);
-        if(method.equals("POST")){
-            JSONObject source=body.getJSONObject("source"),item=body.getJSONObject("item");String id=key(source.getString("url")+":"+item.getString("vodId"));
-            for(int i=0;i<all.length();i++)if(all.getJSONObject(i).getString("id").equals(id))return new JSONObject().put("item",all.getJSONObject(i));
-            JSONObject entry=new JSONObject().put("id",id).put("source",source).put("item",item);all.put(entry);
-            if(!prefs.edit().putString("favorites",all.toString()).commit())throw new IOException("收藏保存失败");return new JSONObject().put("item",entry);
-        }
-        String id=route.substring(route.lastIndexOf('/')+1);JSONArray next=new JSONArray();for(int i=0;i<all.length();i++)if(!all.getJSONObject(i).getString("id").equals(id))next.put(all.getJSONObject(i));
-        if(!prefs.edit().putString("favorites",next.toString()).commit())throw new IOException("收藏删除失败");return new JSONObject().put("success",true);
     }
 }

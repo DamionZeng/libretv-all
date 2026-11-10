@@ -46,7 +46,6 @@ public final class DirectPlayerActivity extends Activity {
     private String title;
     private TextView status, episodeCaption;
     private LinearLayout episodeGrid;
-    private Button favorite;
     private TextView landscapeCaption;
     private boolean landscape;
     private int entryOrientation;
@@ -86,7 +85,7 @@ public final class DirectPlayerActivity extends Activity {
     }
     private int dp(int n) { return Math.round(n * getResources().getDisplayMetrics().density); }
     private TextView label(String value,int size) {
-        TextView t=new TextView(this);t.setText(value);t.setTextColor(Color.WHITE);t.setTextSize(size);return t;
+        TextView t=new TextView(this);t.setText(value);t.setTextColor(PlayerStyle.TEXT);t.setTextSize(size);return t;
     }
     private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
     private Button action(LinearLayout row,String text,String icon,Runnable run){
@@ -117,9 +116,9 @@ public final class DirectPlayerActivity extends Activity {
         Button rotate=PlayerStyle.action(this,"","rotate",false);rotate.setContentDescription("横屏 / 竖屏");heading.addView(rotate,new LinearLayout.LayoutParams(dp(48),dp(48)));rotate.setOnClickListener(v->changeOrientation());
         Button moreTop=PlayerStyle.action(this,"","more",false);moreTop.setContentDescription("更多");heading.addView(moreTop,new LinearLayout.LayoutParams(dp(44),dp(48)));moreTop.setOnClickListener(v->showMore());
         bottomChrome=column();bottomChrome.setBackgroundColor(Color.TRANSPARENT);
-        autoNext=new Switch(this);autoNext.setText("自动下一集");autoNext.setTextColor(Color.WHITE);autoNext.setThumbTintList(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PlayerStyle.PINK,PlayerStyle.MUTED}));autoNext.setTrackTintList(android.content.res.ColorStateList.valueOf(0x66344253));
+        autoNext=new Switch(this);autoNext.setText("自动下一集");autoNext.setTextColor(PlayerStyle.TEXT);autoNext.setThumbTintList(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PlayerStyle.ACCENT,PlayerStyle.MUTED}));autoNext.setTrackTintList(android.content.res.ColorStateList.valueOf(0x332e333a));
         autoNext.setChecked(settings.getBoolean("autoNext",true));autoNext.setOnCheckedChangeListener((v,on)->settings.edit().putBoolean("autoNext",on).apply());
-        LinearLayout root=column();root.setBackgroundColor(PlayerStyle.NAVY);
+        LinearLayout root=column();root.setBackgroundColor(PlayerStyle.BACKDROP);
         if(landscape){
             stage.addView(topChrome,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
             LinearLayout actions=new LinearLayout(this);actions.setGravity(Gravity.CENTER_VERTICAL);bottomChrome.addView(actions);
@@ -136,13 +135,9 @@ public final class DirectPlayerActivity extends Activity {
             root.addView(topChrome,new LinearLayout.LayoutParams(-1,-2));
             root.addView(stage,new LinearLayout.LayoutParams(-1,dp(Math.round(getResources().getDisplayMetrics().widthPixels/getResources().getDisplayMetrics().density*9/16f))));
             ScrollView details=new ScrollView(this);details.setFillViewport(true);details.addView(bottomChrome);root.addView(details,new LinearLayout.LayoutParams(-1,0,1));
-            bottomChrome.setBackgroundColor(PlayerStyle.NAVY);bottomChrome.setPadding(dp(18),dp(12),dp(18),dp(16));
+            bottomChrome.setBackgroundColor(PlayerStyle.PANEL);bottomChrome.setPadding(dp(18),dp(12),dp(18),dp(16));
             LinearLayout titleRow=new LinearLayout(this);titleRow.setGravity(Gravity.CENTER_VERTICAL);bottomChrome.addView(titleRow);
             status=label(title,26);status.setTypeface(null,Typeface.BOLD);titleRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));
-            favorite=PlayerStyle.action(this,"收藏","star",false);titleRow.addView(favorite,new LinearLayout.LayoutParams(dp(80),dp(48)));favorite.setCompoundDrawables(favorite.getCompoundDrawables()[1],null,null,null);favorite.setCompoundDrawablePadding(dp(5));favorite.setTextSize(12);favorite.setPadding(0,0,0,0);
-            favorite.setBackground(PlayerStyle.surface(Color.TRANSPARENT,0,this));
-            favorite.setTextColor(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_selected},new int[]{}},new int[]{PlayerStyle.PINK,PlayerStyle.MUTED}));
-            favorite.setOnClickListener(v->toggleFavorite());refreshFavorite();
             bottomChrome.addView(episodeCaption);
             LinearLayout actions=new LinearLayout(this);LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,dp(68));ap.topMargin=dp(8);bottomChrome.addView(actions,ap);
             action(actions,"上一集","previous",()->switchEpisode(index-1));action(actions,"下一集","next",()->switchEpisode(index+1));
@@ -269,17 +264,9 @@ public final class DirectPlayerActivity extends Activity {
         for(int i=0;i<urls.size();i+=columns){LinearLayout row=new LinearLayout(this);episodeGrid.addView(row);for(int j=0;j<columns;j++){
             int target=i+j;if(target>=urls.size()){row.addView(new View(this),new LinearLayout.LayoutParams(0,dp(48),1));continue;}
             Button chip=PlayerStyle.action(this,String.format(java.util.Locale.ROOT,"第%02d集",target+1),"",false);chip.setCompoundDrawables(null,null,null,null);chip.setSelected(target==index);
-            GradientDrawable idle=PlayerStyle.surface(0xff162131,10,this);idle.setStroke(dp(1),0xff344253);android.graphics.drawable.StateListDrawable bg=new android.graphics.drawable.StateListDrawable();bg.addState(new int[]{android.R.attr.state_selected},PlayerStyle.surface(PlayerStyle.PINK,10,this));bg.addState(new int[]{},idle);chip.setBackground(bg);
+            GradientDrawable idle=PlayerStyle.surface(0xff16181b,10,this);idle.setStroke(dp(1),0xff2a2e35);android.graphics.drawable.StateListDrawable bg=new android.graphics.drawable.StateListDrawable();GradientDrawable picked=PlayerStyle.surface(0x1fe8a33d,10,this);picked.setStroke(dp(1),0x80e8a33d);bg.addState(new int[]{android.R.attr.state_selected},picked);bg.addState(new int[]{},idle);chip.setBackground(bg);
             LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(44),1);cp.setMargins(0,dp(4),dp(j==columns-1?0:6),dp(4));row.addView(chip,cp);chip.setOnClickListener(v->switchEpisode(target));
         }}
-    }
-    private void refreshFavorite(){
-        if(favorite==null)return;favorite.setEnabled(source!=null&&item!=null);if(source==null||item==null)return;
-        try{String id=LocalRepository.key(source.getString("url")+":"+item.getString("vodId"));boolean found=false;org.json.JSONArray all=new LocalRepository(this).favorites("/api/favorites",null,"GET").getJSONArray("items");for(int i=0;i<all.length();i++)if(id.equals(all.getJSONObject(i).getString("id")))found=true;favorite.setText(found?"已收藏":"收藏");favorite.setSelected(found);}catch(Exception e){favorite.setEnabled(false);}
-    }
-    private void toggleFavorite(){
-        if(source==null||item==null)return;
-        try{LocalRepository repo=new LocalRepository(this);String id=LocalRepository.key(source.getString("url")+":"+item.getString("vodId"));if(favorite.isSelected())repo.favorites("/api/favorites/"+id,null,"DELETE");else repo.favorites("/api/favorites",new JSONObject().put("source",source).put("item",item),"POST");refreshFavorite();}catch(Exception e){Toast.makeText(this,"收藏保存失败，请重试",Toast.LENGTH_SHORT).show();}
     }
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused)applySystemBars();}
     @SuppressWarnings("deprecation") @Override public void onBackPressed(){

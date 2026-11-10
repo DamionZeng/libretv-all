@@ -2,12 +2,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-    <application tools:replace="android:allowBackup" android:theme="@style/AppTheme" android:label="片刻"
+    <application tools:replace="android:allowBackup" android:theme="@style/AppTheme" android:label="星光影院"
         android:icon="@mipmap/ic_launcher" android:roundIcon="@mipmap/ic_launcher_round" android:banner="@drawable/pianke_tv_banner"
         android:usesCleartextTraffic="true" android:allowBackup="false" android:supportsRtl="true">
         <receiver android:name=".UpdateInstallReceiver" android:exported="false" />
@@ -18,8 +20,6 @@
         <activity android:name=".LegacyUpdateActivity" android:exported="false" />
         <activity android:name=".SourceScannerActivity" android:exported="false" android:screenOrientation="user" />
         <activity android:name=".TvHomeActivity" android:exported="false" android:screenOrientation="landscape" />
-        <activity android:name=".LiveBrowseActivity" android:exported="false" android:screenOrientation="landscape" />
-        <activity android:name=".LivePlayerActivity" android:exported="false" android:configChanges="orientation|screenSize" />
         <activity android:name=".DirectPlayerActivity" android:exported="false" />
         <activity android:name=".PhoneActivity" android:exported="false" android:screenOrientation="user" android:configChanges="orientation|screenSize" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="user">

@@ -13,31 +13,38 @@ import java.util.concurrent.*;
 /** Small, bounded cover loader. Images use the authenticated NAS proxy, never third-party cookies. */
 final class PosterLoader {
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(2, 2, 0, TimeUnit.SECONDS,
-            new ArrayBlockingQueue<>(64), new ThreadPoolExecutor.DiscardOldestPolicy());
+    /** 队列需容纳整页海报（分类页 100 条），否则丢弃最早任务会导致中间卡片长时间空图。 */
+    private final ThreadPoolExecutor workers = new ThreadPoolExecutor(3, 3, 0, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(256), new ThreadPoolExecutor.DiscardPolicy());
     private final LruCache<String, Bitmap> cache = new LruCache<String, Bitmap>(8 * 1024 * 1024) {
         @Override protected int sizeOf(String key, Bitmap value) { return value.getAllocationByteCount(); }
     };
     private boolean closed;
-    void load(ImageView view, NasClient client, String url) { load(view,client,url,R.drawable.poster_placeholder); }
-    void loadPublic(ImageView view,String url,int placeholder) { load(view,null,url,placeholder); }
-    private void load(ImageView view,NasClient client,String url,int placeholder) {
-        String key = (client==null?"public":client.origin) + "|" + url;
+    interface Loaded { void onBitmap(Bitmap bitmap); }
+    void load(ImageView view, NasClient client, String url) { load(view,client,url,R.drawable.poster_placeholder,null,false); }
+    void loadPublic(ImageView view,String url,int placeholder) { load(view,null,url,placeholder,null,false); }
+    void loadPublic(ImageView view,String url,int placeholder,Loaded callback) { load(view,null,url,placeholder,callback,false); }
+    /** 轮播大图：放宽解码上限，避免海报被压成小图后放大发虚。 */
+    void loadLarge(ImageView view,String url,int placeholder) { load(view,null,url,placeholder,null,true); }
+    private void load(ImageView view,NasClient client,String url,int placeholder,Loaded callback,boolean large) {
+        String key = (large?"large|":"") + (client==null?"public":client.origin) + "|" + url;
         view.setTag(key);
         view.setImageResource(placeholder);
-        if (url.isEmpty() || closed) return;
+        if (url.isEmpty() || closed) { if (callback != null) callback.onBitmap(null); return; }
         Bitmap saved = cache.get(key);
-        if (saved != null) { view.setImageBitmap(saved); return; }
+        if (saved != null) { view.setImageBitmap(saved); if (callback != null) callback.onBitmap(saved); return; }
         workers.execute(() -> {
-            Bitmap bitmap = fetch(client, url);
+            Bitmap bitmap = fetch(client, url, large);
             main.post(() -> {
-                if (closed || bitmap == null) return;
+                if (closed || bitmap == null) { if (callback != null) callback.onBitmap(null); return; }
                 cache.put(key, bitmap);
                 if (key.equals(view.getTag())) view.setImageBitmap(bitmap);
+                if (callback != null) callback.onBitmap(bitmap);
             });
         });
     }
-    private Bitmap fetch(NasClient client, String url) {
+    private Bitmap fetch(NasClient client, String url) { return fetch(client, url, false); }
+    private Bitmap fetch(NasClient client, String url, boolean large) {
         HttpURLConnection connection = null;
         try {
             connection = client==null?LocalRepository.open(LocalRepository.validate(url)):client.open(client.proxy(url));
@@ -59,7 +66,8 @@ final class PosterLoader {
             BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0 || bounds.outWidth > 20000 || bounds.outHeight > 20000) return null;
             BitmapFactory.Options options = new BitmapFactory.Options(); options.inSampleSize = 1;
-            while (bounds.outWidth / options.inSampleSize > 480 || bounds.outHeight / options.inSampleSize > 720) options.inSampleSize *= 2;
+            int maxWidth = large ? 1080 : 480, maxHeight = large ? 1620 : 720;
+            while (bounds.outWidth / options.inSampleSize > maxWidth || bounds.outHeight / options.inSampleSize > maxHeight) options.inSampleSize *= 2;
             return BitmapFactory.decodeByteArray(data, 0, data.length, options);
         } catch (IOException | IllegalArgumentException ignored) { return null; }
         finally { if (connection != null) connection.disconnect(); }

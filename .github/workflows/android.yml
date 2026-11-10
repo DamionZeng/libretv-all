@@ -1,0 +1,85 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK components
+        run: sdkmanager --install "platforms;android-35" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 公开构建不打包本地私有片源目录（local/ 已被 .gitignore 排除）。
+      - name: Build debug APK
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug -PincludeLocalSources=false
+
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          cp "$APK" "out/StarlightTV-${GITHUB_SHA::7}.apk"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ]; then
+            cp "$APK" "out/StarlightTV-latest.apk"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            cp "$APK" "out/StarlightTV-${GITHUB_REF_NAME}.apk"
+          fi
+          ls -lh out
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: StarlightTV-apk-${{ github.sha }}
+          path: out/*.apk
+          if-no-files-found: error
+
+      # main 分支的每次构建更新同一个 latest 预发布，下载地址固定不变。
+      - name: Publish latest build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 最新构建
+          prerelease: true
+          body: |
+            由 main 分支 `${{ github.sha }}` 自动构建，安装包为 debug 签名。
+          files: out/StarlightTV-latest.apk
+
+      # 推送 v* 标签时发布正式 Release。
+      - name: Publish tagged release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: |
+            由标签 `${{ github.ref_name }}` 自动构建，安装包为 debug 签名。
+          files: out/StarlightTV-${{ github.ref_name }}.apk
