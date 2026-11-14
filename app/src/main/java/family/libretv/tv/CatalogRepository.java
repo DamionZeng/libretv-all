@@ -17,6 +17,8 @@ import java.util.concurrent.*;
 final class CatalogRepository {
     static final String[] CATEGORIES = {"全部", "电影", "电视剧", "综艺", "动漫", "纪录片", "短剧"};
     static final String[] YEARS = {"全部", "2026", "2025", "2024", "2023", "2022", "2021", "2020", "2019", "2018"};
+    /** 国家/地区筛选项，写法与服务端 AREA_ALIASES 对应。 */
+    static final String[] AREAS = {"全部", "大陆", "香港", "台湾", "美国", "日本", "韩国", "英国", "法国", "泰国", "印度", "其它"};
     static final int SORT_TIME = 0, SORT_RATE = 1;
     static final String ALL = "全部";
     private static final long TTL = 4 * 60 * 60 * 1000L;
@@ -124,23 +126,24 @@ final class CatalogRepository {
     }
 
     /** 片库分页：不缓存、不做本地过滤，每次翻页/筛选都按参数向采集服务重新请求。 */
-    Page page(String category, String year, int sort, int pageNo) throws Exception {
+    Page page(String category, String year, String area, int sort, int pageNo) throws Exception {
         final int requested = Math.max(1, pageNo);
         final String order = sort == SORT_RATE ? "S" : "R";
+        final String region = area == null ? "" : area;
         JSONArray out;
         boolean more;
         int pages;
         if (both(category)) {
             // 「全部」= 电影 + 剧集：两个入口各取半页，交替合并；页码直接换算成 start 偏移。
             final int half = PAGE_SIZE / 2, start = (requested - 1) * half;
-            String movieBody = fetch(recommend("电影", tags("电影", year), order, start, half));
-            String tvBody = fetch(recommend("电视剧", tags("电视剧", year), order, start, half));
+            String movieBody = fetch(recommend("电影", tags("电影", year), order, start, half, region));
+            String tvBody = fetch(recommend("电视剧", tags("电视剧", year), order, start, half, region));
             out = interleave(parse(movieBody, "电影"), parse(tvBody, "电视剧"));
             pages = Math.max(pageCount(totalOf(movieBody), half), pageCount(totalOf(tvBody), half));
             more = requested < pages;
         } else {
             final int start = (requested - 1) * PAGE_SIZE;
-            String body = fetch(recommend(category, tags(category, year), order, start, PAGE_SIZE));
+            String body = fetch(recommend(category, tags(category, year), order, start, PAGE_SIZE, region));
             out = parse(body, category);
             int total = totalOf(body);
             if (total > 0) {
@@ -188,12 +191,20 @@ final class CatalogRepository {
     }
 
     private String recommend(String category, String tag, String sort, int start, int count) throws Exception {
+        return recommend(category, tag, sort, start, count, "");
+    }
+
+    /** area 为「全部」或空时不带参数，交给服务端返回全部地区。 */
+    private String recommend(String category, String tag, String sort, int start, int count, String area)
+            throws Exception {
+        String region = area == null || ALL.equals(area) ? "" : area;
         return base() + "/rexxar/api/v2/" + type(category) + "/recommend?refresh=0"
                 + "&start=" + start
                 + "&count=" + count
                 + "&tags=" + URLEncoder.encode(tag, "UTF-8")
                 + "&sort=" + sort
-                + "&type=" + type(category);
+                + "&type=" + type(category)
+                + (region.isEmpty() ? "" : "&area=" + URLEncoder.encode(region, "UTF-8"));
     }
 
     /** 按片名反查本地元数据，供详情页补充简介、演职员、评分等信息；1 小时缓存一次。 */
@@ -210,6 +221,13 @@ final class CatalogRepository {
                     .putLong(key + "-at", System.currentTimeMillis()).apply();
         }
         return meta;
+    }
+
+    /** 后台维护的片源列表，App 启动时拉取并自动导入到本地片源。 */
+    JSONArray remoteSources() throws Exception {
+        JSONObject body = new JSONObject(fetch(base() + "/api/v1/sources"));
+        JSONArray list = body.optJSONArray("sources");
+        return list == null ? new JSONArray() : list;
     }
 
     /** 分类榜单：按热度排序并过滤低分条目，避免冷门片占据榜单。 */

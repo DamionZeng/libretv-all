@@ -127,6 +127,10 @@ class Database:
         async with self.acquire() as conn:
             return await conn.executemany(sql, rows)
 
+    async def execute_insert(self, sql: str, *args) -> int:
+        async with self.acquire() as conn:
+            return await conn.execute_insert(sql, *args)
+
     async def close(self) -> None:
         self.raw_pool.close()
         await self.raw_pool.wait_closed()

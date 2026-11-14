@@ -129,12 +129,34 @@
   .switch input:checked + .slider:before { transform: translateX(20px); background: var(--accent); }
 
   select, input[type="text"], input[type="number"] {
-    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    background: linear-gradient(180deg, #15171c, #111318);
+    color: var(--text); border: 1px solid var(--line);
     border-radius: 10px; padding: 9px 12px; font-size: 13px; outline: none;
-    font-family: inherit; transition: border-color .15s;
+    font-family: inherit; line-height: 1.45;
+    box-shadow: 0 1px 0 rgba(255,255,255,.02) inset;
+    transition: border-color .16s, box-shadow .16s, background .16s;
   }
-  select:focus, input:focus { border-color: rgba(232,163,61,.55); }
+  select:hover, input[type="text"]:hover, input[type="number"]:hover { border-color: #333941; }
+  select:focus, input:focus {
+    border-color: rgba(232,163,61,.62);
+    box-shadow: 0 0 0 3px rgba(232,163,61,.15);
+    background: #16181d;
+  }
   input::placeholder { color: var(--text-3); }
+
+  /* ---------- 片源管理入口 ---------- */
+  .entry { display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap; }
+  .entry-main { display: flex; align-items: center; gap: 16px; }
+  .entry-icon {
+    width: 46px; height: 46px; border-radius: 13px; flex: none; display: grid; place-items: center;
+    background: linear-gradient(145deg, rgba(232,163,61,.18), rgba(232,163,61,.06));
+    border: 1px solid rgba(232,163,61,.26); color: var(--accent);
+  }
+  .entry-icon svg { width: 22px; height: 22px; }
+  .entry h2 { margin: 0; font-size: 14.5px; font-weight: 600; letter-spacing: .3px; }
+  .entry p { margin: 4px 0 0; font-size: 12.5px; color: var(--text-3); max-width: 620px; }
+  .entry .btn { text-decoration: none; height: 40px; padding: 0 18px; border-radius: 10px; }
+  .entry .btn svg { width: 15px; height: 15px; }
 
   .btn {
     display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
@@ -143,10 +165,13 @@
     transition: .15s; font-family: inherit;
   }
   .btn:hover:not(:disabled) { border-color: #3a4048; background: #1e2229; }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(232,163,61,.2); }
   .btn:disabled { opacity: .45; cursor: not-allowed; }
   .btn.primary {
-    background: linear-gradient(145deg, #f0b45a, #d18a28);
+    background: linear-gradient(180deg, #f2b95a, #d18a28);
     border-color: transparent; color: #201504; font-weight: 600;
+    box-shadow: 0 1px 0 rgba(255,255,255,.22) inset, 0 6px 16px rgba(232,163,61,.14);
   }
   .btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
   .btn.ghost { background: transparent; }
@@ -296,7 +321,7 @@
   <section>
     <div class="sec-head">
       <h2>数据概览</h2>
-      <span>来自 PostgreSQL · 每 5 秒自动刷新</span>
+      <span>来自 MySQL · 每 5 秒自动刷新</span>
     </div>
     <div class="grid stats">
       <div class="card stat">
@@ -403,6 +428,29 @@
           <div id="schedStateText" style="color:var(--text-2); font-size:13px">-</div>
         </div>
       </div>
+    </div>
+  </section>
+
+  <!-- 片源管理入口 -->
+  <section>
+    <div class="card entry">
+      <div class="entry-main">
+        <div class="entry-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 6h16M4 12h16M4 18h10" />
+          </svg>
+        </div>
+        <div>
+          <h2>片源管理</h2>
+          <p>在独立页面中批量导入 JSON 片源、编辑接口地址、启用或停用；App 启动时会自动拉取已启用片源。</p>
+        </div>
+      </div>
+      <a class="btn primary" id="openSources" href="/admin/sources">
+        打开资源管理
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14M13 6l6 6-6 6" />
+        </svg>
+      </a>
     </div>
   </section>
 
@@ -804,6 +852,7 @@
     $("tokenbar").classList.remove("show");
     refreshOverview();
     loadVideos();
+    syncSourcesLink();
   }
   $("tokenSave").addEventListener("click", saveToken);
   $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveToken(); });
@@ -906,8 +955,16 @@
     logSearchTimer = setTimeout(loadLogs, 300);
   });
 
+  /* ---------- 片源管理入口 ---------- */
+  function syncSourcesLink() {
+    const link = $("openSources");
+    if (!link) return;
+    link.href = "/admin/sources" + (token ? "?token=" + encodeURIComponent(token) : "");
+  }
+
   refreshOverview();
   loadVideos();
+  syncSourcesLink();
   setInterval(refreshOverview, 5000);
 })();
 </script>

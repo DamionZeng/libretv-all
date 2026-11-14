@@ -31,6 +31,7 @@ public final class TvHomeActivity extends Activity {
     private boolean browseHasMore;
     private String page = "home", section = "电影", focusKey = "nav-voice";
     private String year = CatalogRepository.ALL;
+    private String area = CatalogRepository.ALL;
     private int sort = CatalogRepository.SORT_TIME;
     private String rankCategory = "电影";
     private JSONArray ranking = new JSONArray();
@@ -72,6 +73,8 @@ public final class TvHomeActivity extends Activity {
         if (state != null) {
             page = state.getString("page", "home"); section = state.getString("section", "电影");
             focusKey = state.getString("focusKey", "hero"); browsePage = state.getInt("browsePage", 1);
+            year = state.getString("year", CatalogRepository.ALL);
+            area = state.getString("area", CatalogRepository.ALL);
         }
         if (state == null) applyPage(getIntent());
         UpdateActivity.checkInBackground(this);
@@ -438,6 +441,10 @@ public final class TvHomeActivity extends Activity {
         if (value.equals(year)) return;
         year = value; reloadBrowse();
     }
+    private void filterArea(String value) {
+        if (value.equals(area)) return;
+        area = value; reloadBrowse();
+    }
     private void filterSort(int value) {
         if (value == sort) return;
         sort = value; reloadBrowse();
@@ -458,6 +465,7 @@ public final class TvHomeActivity extends Activity {
                 sort == CatalogRepository.SORT_RATE ? "按评分" : "按时间",
                 value -> filterSort("按评分".equals(value) ? CatalogRepository.SORT_RATE : CatalogRepository.SORT_TIME));
         filterRow("年份", CatalogRepository.YEARS, year, this::filterYear);
+        filterRow("国家", CatalogRepository.AREAS, area, this::filterArea);
         LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
         left.setPadding(0, dp(10), 0, 0);
         body.addView(left, new LinearLayout.LayoutParams(-1, -2));
@@ -645,11 +653,11 @@ public final class TvHomeActivity extends Activity {
         if (catalog == null) return;
         browseLoading = true;
         updateBrowseFooter();
-        final String requestedSection = section, requestedYear = year;
+        final String requestedSection = section, requestedYear = year, requestedArea = area;
         final int requestedSort = sort, token = ++browseToken;
         browsePending = discoveryWorker.submit(() -> {
             try {
-                CatalogRepository.Page result = catalog.page(requestedSection, requestedYear, requestedSort, 1);
+                CatalogRepository.Page result = catalog.page(requestedSection, requestedYear, requestedArea, requestedSort, 1);
                 main.post(() -> {
                     if (dead || token != browseToken || !page.equals("browse")) return;
                     browseItems = result.items;
@@ -674,11 +682,11 @@ public final class TvHomeActivity extends Activity {
         browseLoading = true;
         updateBrowseFooter();
         final int next = browsePage + 1;
-        final String requestedSection = section, requestedYear = year;
+        final String requestedSection = section, requestedYear = year, requestedArea = area;
         final int requestedSort = sort, token = browseToken;
         browsePending = discoveryWorker.submit(() -> {
             try {
-                CatalogRepository.Page result = catalog.page(requestedSection, requestedYear, requestedSort, next);
+                CatalogRepository.Page result = catalog.page(requestedSection, requestedYear, requestedArea, requestedSort, next);
                 main.post(() -> {
                     if (dead || token != browseToken || !page.equals("browse")) return;
                     browseLoading = false;
@@ -784,6 +792,7 @@ public final class TvHomeActivity extends Activity {
         out.putString("page", page); out.putString("section", section);
         out.putString("focusKey", focusKey); out.putInt("browsePage", browsePage);
         out.putString("rankCategory", rankCategory);
+        out.putString("year", year); out.putString("area", area);
         super.onSaveInstanceState(out);
     }
     @Override protected void onStop() {

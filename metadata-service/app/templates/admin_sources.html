@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>片源管理 · 元数据采集控制台</title>
+<style>
+  :root {
+    --bg: #08080a;
+    --panel: #0f1014;
+    --panel-2: #14151a;
+    --panel-3: #191b21;
+    --line: #23252d;
+    --line-strong: #31343d;
+    --text: #f4f4f5;
+    --text-2: #a7abb4;
+    --text-3: #71757e;
+    --accent: #e8a33d;
+    --accent-hi: #f2b95a;
+    --accent-fg: #1d1303;
+    --ring: rgba(232, 163, 61, .22);
+    --green: #4ade80;
+    --green-soft: rgba(74, 222, 128, .12);
+    --red: #f87171;
+    --red-soft: rgba(248, 113, 113, .12);
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    background-image:
+      radial-gradient(900px 340px at 18% -8%, rgba(232, 163, 61, .10), transparent 62%),
+      radial-gradient(700px 300px at 92% -12%, rgba(106, 168, 240, .07), transparent 60%);
+    background-repeat: no-repeat;
+  }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(8, 8, 10, .78); backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+  }
+  .bar {
+    max-width: 1180px; margin: 0 auto; padding: 14px 26px;
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  .back {
+    display: inline-flex; align-items: center; gap: 7px; text-decoration: none;
+    color: var(--text-2); font-size: 13px; padding: 8px 13px; border-radius: 9px;
+    border: 1px solid var(--line); background: var(--panel);
+    transition: .16s;
+  }
+  .back:hover { color: var(--text); border-color: var(--line-strong); background: var(--panel-2); }
+  .back svg { width: 15px; height: 15px; }
+  .titles h1 { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: .3px; }
+  .titles p { margin: 1px 0 0; font-size: 12px; color: var(--text-3); }
+  .spacer { flex: 1; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 7px 13px;
+    border-radius: 999px; font-size: 12.5px; color: var(--text-2);
+    background: var(--panel); border: 1px solid var(--line);
+  }
+
+  /* ---------- 按钮 ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    height: 38px; padding: 0 16px; border-radius: 9px; cursor: pointer;
+    font: inherit; font-size: 13px; font-weight: 500; line-height: 1;
+    color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--line); white-space: nowrap;
+    transition: background .16s, border-color .16s, box-shadow .16s, transform .1s;
+  }
+  .btn:hover:not(:disabled) { background: var(--panel-3); border-color: var(--line-strong); }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--ring); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn-primary {
+    background: linear-gradient(180deg, var(--accent-hi), var(--accent));
+    border-color: transparent; color: var(--accent-fg); font-weight: 600;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .22) inset, 0 6px 18px rgba(232, 163, 61, .16);
+  }
+  .btn-primary:hover:not(:disabled) { filter: brightness(1.05); background: linear-gradient(180deg, var(--accent-hi), var(--accent)); }
+  .btn-ghost { background: transparent; border-color: transparent; color: var(--text-2); }
+  .btn-ghost:hover:not(:disabled) { background: var(--panel-2); border-color: var(--line); color: var(--text); }
+  .btn-destructive { color: #fca5a5; background: var(--red-soft); border-color: rgba(248, 113, 113, .26); }
+  .btn-destructive:hover:not(:disabled) { background: rgba(248, 113, 113, .18); border-color: rgba(248, 113, 113, .4); }
+  .btn-sm { height: 30px; padding: 0 11px; font-size: 12px; border-radius: 8px; }
+  .btn-icon { width: 34px; height: 34px; padding: 0; }
+
+  /* ---------- 布局 ---------- */
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 26px 26px 70px; }
+  section + section { margin-top: 20px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), #0b0c0f);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .02) inset;
+  }
+  .card-head { padding: 18px 20px 0; }
+  .card-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+  .card-head p { margin: 5px 0 0; font-size: 12.5px; color: var(--text-3); }
+  .card-body { padding: 16px 20px 20px; }
+
+  /* ---------- 表单控件 ---------- */
+  .field { display: flex; flex-direction: column; gap: 7px; }
+  .field > label { font-size: 12.5px; font-weight: 500; color: var(--text-2); }
+  .hint { margin: 0; font-size: 12px; color: var(--text-3); }
+  .control { position: relative; display: flex; align-items: center; }
+  .control > svg {
+    position: absolute; left: 12px; width: 15px; height: 15px;
+    color: var(--text-3); pointer-events: none;
+  }
+  input[type="text"], input[type="url"] {
+    width: 100%; height: 40px; padding: 0 12px; border-radius: 10px;
+    background: #101115; color: var(--text); border: 1px solid var(--line);
+    font: inherit; font-size: 13px; outline: none;
+    box-shadow: 0 1px 0 rgba(255, 255, 255, .02) inset;
+    transition: border-color .16s, box-shadow .16s, background .16s;
+  }
+  .control > input[type="text"], .control > input[type="url"] { padding-left: 36px; }
+  input[type="text"]:hover, input[type="url"]:hover { border-color: var(--line-strong); }
+  input[type="text"]:focus, input[type="url"]:focus {
+    border-color: rgba(232, 163, 61, .62);
+    box-shadow: 0 0 0 3px var(--ring);
+    background: #121318;
+  }
+  input::placeholder { color: var(--text-3); }
+
+  .switch { position: relative; width: 46px; height: 26px; flex: none; display: inline-block; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch span {
+    position: absolute; inset: 0; cursor: pointer; border-radius: 999px;
+    background: #2a2d35; border: 1px solid var(--line); transition: .2s;
+  }
+  .switch span:before {
+    content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
+    border-radius: 50%; background: #8b9099; transition: .2s;
+  }
+  .switch input:checked + span { background: rgba(232, 163, 61, .16); border-color: rgba(232, 163, 61, .5); }
+  .switch input:checked + span:before { transform: translateX(20px); background: var(--accent); }
+
+  /* ---------- 导入区 ---------- */
+  .import-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .import-row .control { flex: 1; min-width: 320px; }
+  .import-result { display: flex; gap: 9px; flex-wrap: wrap; margin-top: 14px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px;
+    border-radius: 999px; font-size: 12.5px; border: 1px solid var(--line);
+    background: var(--panel-2); color: var(--text-2);
+  }
+  .chip b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .chip.add { color: #86efac; border-color: rgba(74, 222, 128, .28); background: var(--green-soft); }
+  .chip.add b { color: #86efac; }
+  .chip.upd { color: #fcd08a; border-color: rgba(232, 163, 61, .3); background: rgba(232, 163, 61, .1); }
+  .chip.upd b { color: #fcd08a; }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap { overflow-x: auto; padding: 4px 6px 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 500; color: var(--text-3); font-size: 11.5px;
+    letter-spacing: .4px; text-transform: uppercase;
+    padding: 11px 14px; border-bottom: 1px solid var(--line); white-space: nowrap;
+    position: sticky; top: 0; background: #0d0e12;
+  }
+  td {
+    padding: 12px 14px; border-bottom: 1px solid #1a1c22;
+    color: var(--text-2); vertical-align: middle;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr { transition: background .14s; }
+  tbody tr:hover { background: rgba(255, 255, 255, .022); }
+  td.name { color: var(--text); font-weight: 500; min-width: 150px; }
+  td.url { max-width: 380px; word-break: break-all; font-size: 12px; }
+  td.actions { text-align: right; white-space: nowrap; }
+  td.actions .btn + .btn { margin-left: 6px; }
+  .num { color: var(--text-3); font-variant-numeric: tabular-nums; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px;
+    border-radius: 999px; font-size: 11.5px; border: 1px solid transparent;
+    white-space: nowrap;
+  }
+  .badge:before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.on { color: var(--green); background: var(--green-soft); border-color: rgba(74, 222, 128, .22); }
+  .badge.off { color: var(--text-3); background: #1b1d23; border-color: var(--line); }
+
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+    padding: 52px 0; color: var(--text-3); font-size: 13px;
+  }
+  .empty-state svg { width: 26px; height: 26px; opacity: .6; }
+
+  /* ---------- 弹窗 ---------- */
+  .dialog { position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 20px; }
+  .dialog[hidden] { display: none; }
+  .dialog-backdrop { position: absolute; inset: 0; background: rgba(0, 0, 0, .66); backdrop-filter: blur(5px); }
+  .dialog-card {
+    position: relative; width: min(560px, 100%); max-height: 88vh; overflow: auto;
+    background: linear-gradient(180deg, #131419, #0d0e12);
+    border: 1px solid var(--line-strong); border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(0, 0, 0, .6);
+    animation: dialogIn .18s ease;
+  }
+  @keyframes dialogIn { from { opacity: 0; transform: translateY(10px) scale(.99); } to { opacity: 1; transform: none; } }
+  .dialog-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 18px 20px 12px;
+  }
+  .dialog-head h3 { margin: 0; font-size: 15px; font-weight: 600; }
+  .dialog-body { display: flex; flex-direction: column; gap: 16px; padding: 6px 20px 18px; }
+  .dialog-foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 20px; border-top: 1px solid var(--line);
+    background: rgba(255, 255, 255, .012);
+  }
+  .switch-row { flex-direction: row; align-items: center; justify-content: space-between; gap: 14px; }
+  .switch-row .field-text { display: flex; flex-direction: column; gap: 3px; }
+
+  /* ---------- Toast ---------- */
+  #toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 16px);
+    background: #1b1d23; border: 1px solid var(--line-strong); color: var(--text);
+    padding: 11px 20px; border-radius: 11px; font-size: 13px; opacity: 0;
+    pointer-events: none; transition: .22s; z-index: 80;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, .45);
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.err { border-color: rgba(248, 113, 113, .45); color: #ffbbbb; }
+
+  @media (max-width: 720px) {
+    .bar { padding: 12px 16px; }
+    .wrap { padding: 18px 16px 56px; }
+    td.url { max-width: 220px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <a class="back" id="backLink" href="/admin">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M19 12H5M12 19l-7-7 7-7" />
+      </svg>
+      返回控制台
+    </a>
+    <div class="titles">
+      <h1>片源管理</h1>
+      <p>批量导入、编辑与启停片源，App 启动时自动拉取</p>
+    </div>
+    <div class="spacer"></div>
+    <div class="pill" id="countPill">共 0 个片源</div>
+    <button class="btn btn-primary" id="newBtn">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      新增片源
+    </button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="card">
+    <div class="card-head">
+      <h2>从 JSON 地址批量导入</h2>
+      <p>支持 <span class="mono">{"sources":[…]}</span> 或顶层数组；链接已存在则跳过，链接不同但名称相同则更新该条链接。</p>
+    </div>
+    <div class="card-body">
+      <div class="import-row">
+        <div class="control">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7" />
+            <path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7" />
+          </svg>
+          <input id="importUrl" type="text" value="https://raw.githubusercontent.com/ljfbin2/tv-sources/main/sources.json" placeholder="https://raw.githubusercontent.com/xxx/xxx/main/sources.json" />
+        </div>
+        <button class="btn btn-primary" id="importBtn">拉取并导入</button>
+      </div>
+      <div class="import-result" id="importResult" hidden></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head" style="display:flex; align-items:flex-end; justify-content:space-between; gap:14px; flex-wrap:wrap; padding-bottom:14px">
+      <div>
+        <h2>片源列表</h2>
+        <p>已启用的片源会在 App 启动时自动导入到本地</p>
+      </div>
+      <div class="control" style="width:min(320px, 100%)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+          <circle cx="11" cy="11" r="7" />
+          <path d="m20 20-3.2-3.2" />
+        </svg>
+        <input id="filter" type="text" placeholder="搜索名称或接口地址" />
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:52px">#</th>
+            <th>名称</th>
+            <th>接口地址</th>
+            <th>详情页</th>
+            <th style="width:96px">状态</th>
+            <th style="width:230px"></th>
+          </tr>
+        </thead>
+        <tbody id="srcBody">
+          <tr><td colspan="6"><div class="empty-state">加载中…</div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div class="dialog" id="dialog" hidden>
+  <div class="dialog-backdrop" data-close="1"></div>
+  <div class="dialog-card" role="dialog" aria-modal="true" aria-labelledby="dlgTitle">
+    <div class="dialog-head">
+      <h3 id="dlgTitle">编辑片源</h3>
+      <button class="btn btn-ghost btn-icon" data-close="1" aria-label="关闭">✕</button>
+    </div>
+    <div class="dialog-body">
+      <div class="field">
+        <label for="fName">片源名称</label>
+        <input id="fName" type="text" maxlength="100" placeholder="🎬暴风资源" />
+      </div>
+      <div class="field">
+        <label for="fUrl">接口地址</label>
+        <input id="fUrl" type="text" maxlength="500" class="mono" placeholder="https://example.com/api.php/provide/vod" />
+      </div>
+      <div class="field">
+        <label for="fDetail">详情页地址（可选）</label>
+        <input id="fDetail" type="text" maxlength="500" class="mono" placeholder="https://example.com" />
+      </div>
+      <div class="field switch-row">
+        <div class="field-text">
+          <label for="fEnabled">启用该片源</label>
+          <p class="hint">停用后 App 不会拉取该片源</p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="fEnabled" checked />
+          <span></span>
+        </label>
+      </div>
+    </div>
+    <div class="dialog-foot">
+      <button class="btn btn-ghost" data-close="1">取消</button>
+      <button class="btn btn-primary" id="saveBtn">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var $ = function (id) { return document.getElementById(id); };
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || localStorage.getItem("libretv_admin_token") || "";
+  var items = [];
+  var editing = null;
+
+  if (token) localStorage.setItem("libretv_admin_token", token);
+
+  var extra = token ? "?token=" + encodeURIComponent(token) : "";
+  $("backLink").href = "/admin" + extra;
+
+  function headers(init) {
+    var h = Object.assign({ "Content-Type": "application/json" }, init || {});
+    if (token) h["X-Admin-Token"] = token;
+    return h;
+  }
+
+  function api(path, options) {
+    return fetch(path, Object.assign({ headers: headers() }, options || {})).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (text) {
+          var detail = text;
+          try { detail = JSON.parse(text).detail || text; } catch (e) {}
+          throw new Error(detail || ("HTTP " + res.status));
+        });
+      }
+      return res.json();
+    });
+  }
+
+  var toastTimer;
+  function toast(message, isError) {
+    var el = $("toast");
+    el.textContent = message;
+    el.className = "show" + (isError ? " err" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.className = ""; }, 2800);
+  }
+
+  function esc(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  var EMPTY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">' +
+    '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 4v5M16 4v5"/></svg>';
+
+  function visible() {
+    var q = $("filter").value.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter(function (s) {
+      return (s.name || "").toLowerCase().indexOf(q) >= 0 || (s.url || "").toLowerCase().indexOf(q) >= 0;
+    });
+  }
+
+  function render() {
+    var body = $("srcBody");
+    var list = visible();
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="6"><div class="empty-state">' + EMPTY_ICON +
+        (items.length ? "没有匹配的片源" : "还没有片源，先在上方批量导入或手动新增") + '</div></td></tr>';
+      return;
+    }
+    body.innerHTML = list.map(function (s, i) {
+      return '<tr>' +
+        '<td class="num">' + (i + 1) + '</td>' +
+        '<td class="name">' + esc(s.name) + '</td>' +
+        '<td class="url mono">' + esc(s.url) + '</td>' +
+        '<td class="url mono">' + esc(s.detail || "-") + '</td>' +
+        '<td><span class="badge ' + (s.enabled ? "on" : "off") + '">' + (s.enabled ? "已启用" : "已停用") + '</span></td>' +
+        '<td class="actions">' +
+          '<button class="btn btn-sm" data-edit="' + s.id + '">编辑</button>' +
+          '<button class="btn btn-sm" data-toggle="' + s.id + '" data-enabled="' + (s.enabled ? 1 : 0) + '">' + (s.enabled ? "停用" : "启用") + '</button>' +
+          '<button class="btn btn-sm btn-destructive" data-del="' + s.id + '">删除</button>' +
+        '</td>' +
+      '</tr>';
+    }).join("");
+  }
+
+  function load() {
+    return api("/admin/api/sources").then(function (data) {
+      items = data.items || [];
+      $("countPill").textContent = "共 " + items.length + " 个片源";
+      render();
+    }).catch(function (e) {
+      $("srcBody").innerHTML = '<tr><td colspan="6"><div class="empty-state">' + esc(e.message) + '</div></td></tr>';
+    });
+  }
+
+  function openDialog(source) {
+    editing = source || null;
+    $("dlgTitle").textContent = source ? "编辑片源" : "新增片源";
+    $("fName").value = source ? source.name : "";
+    $("fUrl").value = source ? source.url : "";
+    $("fDetail").value = source ? (source.detail || "") : "";
+    $("fEnabled").checked = source ? !!source.enabled : true;
+    $("dialog").hidden = false;
+    document.body.style.overflow = "hidden";
+    setTimeout(function () { $("fName").focus(); }, 30);
+  }
+
+  function closeDialog() {
+    $("dialog").hidden = true;
+    document.body.style.overflow = "";
+    editing = null;
+  }
+
+  $("newBtn").addEventListener("click", function () { openDialog(null); });
+  $("dialog").addEventListener("click", function (e) {
+    if (e.target.closest("[data-close]")) closeDialog();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && !$("dialog").hidden) closeDialog();
+  });
+
+  $("saveBtn").addEventListener("click", function () {
+    var name = $("fName").value.trim();
+    var url = $("fUrl").value.trim();
+    var detail = $("fDetail").value.trim();
+    if (!url) { toast("请填写接口地址", true); $("fUrl").focus(); return; }
+    if (!/^https?:\/\/\S+$/i.test(url)) { toast("接口地址需以 http(s):// 开头", true); $("fUrl").focus(); return; }
+    var btn = $("saveBtn");
+    btn.disabled = true;
+    api("/admin/api/sources", {
+      method: "POST",
+      body: JSON.stringify({
+        id: editing ? editing.id : null,
+        name: name || url,
+        url: url,
+        detail: detail,
+        enabled: $("fEnabled").checked
+      })
+    }).then(function () {
+      toast(editing ? "已保存" : "已新增，App 下次启动会自动拉取");
+      closeDialog();
+      load();
+    }).catch(function (e) {
+      toast(e.message, true);
+    }).then(function () {
+      btn.disabled = false;
+    });
+  });
+
+  $("importBtn").addEventListener("click", function () {
+    var url = $("importUrl").value.trim();
+    if (!url) { toast("请填写 JSON 地址", true); $("importUrl").focus(); return; }
+    var btn = $("importBtn");
+    btn.disabled = true;
+    btn.textContent = "导入中…";
+    api("/admin/api/sources/import", {
+      method: "POST",
+      body: JSON.stringify({ url: url })
+    }).then(function (r) {
+      var box = $("importResult");
+      box.hidden = false;
+      box.innerHTML =
+        '<span class="chip add">新增 <b>' + r.added + '</b></span>' +
+        '<span class="chip upd">更新 <b>' + r.updated + '</b></span>' +
+        '<span class="chip">跳过 <b>' + r.skipped + '</b></span>' +
+        (r.invalid ? '<span class="chip">无效 <b>' + r.invalid + '</b></span>' : '');
+      toast("导入完成，共 " + r.total + " 条");
+      load();
+    }).catch(function (e) {
+      toast(e.message, true);
+    }).then(function () {
+      btn.disabled = false;
+      btn.textContent = "拉取并导入";
+    });
+  });
+
+  $("filter").addEventListener("input", render);
+
+  $("srcBody").addEventListener("click", function (e) {
+    var edit = e.target.closest("[data-edit]");
+    if (edit) {
+      var found = items.filter(function (s) { return s.id === Number(edit.dataset.edit); })[0];
+      if (found) openDialog(found);
+      return;
+    }
+    var toggle = e.target.closest("[data-toggle]");
+    if (toggle) {
+      api("/admin/api/sources/state", {
+        method: "POST",
+        body: JSON.stringify({ id: Number(toggle.dataset.toggle), enabled: toggle.dataset.enabled !== "1" })
+      }).then(load).catch(function (err) { toast(err.message, true); });
+      return;
+    }
+    var del = e.target.closest("[data-del]");
+    if (del) {
+      var target = items.filter(function (s) { return s.id === Number(del.dataset.del); })[0];
+      if (!confirm("删除片源「" + (target ? target.name : "") + "」？App 下次拉取后将不再导入。")) return;
+      api("/admin/api/sources/delete", {
+        method: "POST",
+        body: JSON.stringify({ id: Number(del.dataset.del) })
+      }).then(function () {
+        toast("已删除");
+        load();
+      }).catch(function (err) { toast(err.message, true); });
+    }
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

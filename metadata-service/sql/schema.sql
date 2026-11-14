@@ -89,3 +89,20 @@ CREATE TABLE IF NOT EXISTS sync_settings (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 INSERT IGNORE INTO sync_settings (id) VALUES (1);
+
+-- 片源列表（后台维护，App 启动时拉取并自动导入）
+CREATE TABLE IF NOT EXISTS sources (
+    id          INT          NOT NULL AUTO_INCREMENT,
+    name        VARCHAR(100) NOT NULL,
+    url         VARCHAR(500) NOT NULL,
+    detail      VARCHAR(500) NOT NULL DEFAULT '',
+    enabled     BOOLEAN      NOT NULL DEFAULT TRUE,
+    sort_order  INT          NOT NULL DEFAULT 100,
+    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY sources_url_key (url(191))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO sources (name, url, detail, sort_order) VALUES
+    ('🎬暴风资源', 'https://bfzyapi.com/api.php/provide/vod', 'https://bfzy.tv', 10);

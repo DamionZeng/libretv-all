@@ -33,6 +33,21 @@ CARD_COLUMNS = """
     id, name, year, area, type_name, genres, score, score_num, hits, remarks, pic_source
 """
 
+# 源站地区字段写法不统一，这里把同义写法归并成一个筛选项。
+AREA_ALIASES = {
+    "大陆": ("大陆", "中国大陆", "内地", "中国"),
+    "香港": ("香港", "中国香港"),
+    "台湾": ("台湾", "中国台湾"),
+    "美国": ("美国",),
+    "日本": ("日本",),
+    "韩国": ("韩国",),
+    "英国": ("英国",),
+    "法国": ("法国",),
+    "泰国": ("泰国",),
+    "印度": ("印度",),
+    "其它": ("其它", "其他"),
+}
+
 
 def _base_url(request: Request) -> str:
     return settings.public_base_url or str(request.base_url).rstrip("/")
@@ -114,6 +129,21 @@ async def lookup_video(
     return data
 
 
+@router.get("/api/v1/sources")
+async def list_sources():
+    """App 启动时拉取后台维护的片源列表，按 sort_order 排序。"""
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        "SELECT name, url, detail FROM sources WHERE enabled = 1 ORDER BY sort_order, id"
+    )
+    return {
+        "sources": [
+            {"name": row["name"], "url": row["url"], "detail": row["detail"], "isAdult": False}
+            for row in rows
+        ]
+    }
+
+
 def _parse_tags(tags: str | None) -> tuple[int | None, list[str]]:
     year: int | None = None
     labels: list[str] = []
@@ -128,7 +158,12 @@ def _parse_tags(tags: str | None) -> tuple[int | None, list[str]]:
     return year, labels
 
 
-def _where(media_type: str | None, labels: list[str], year: int | None) -> tuple[str, list]:
+def _where(
+    media_type: str | None,
+    labels: list[str],
+    year: int | None,
+    area: str | None = None,
+) -> tuple[str, list]:
     clauses = [BASE_FILTER]
     params: list = []
     label = labels[0] if labels else None
@@ -157,6 +192,11 @@ def _where(media_type: str | None, labels: list[str], year: int | None) -> tuple
         params.append(year)
         clauses.append("year = %s")
 
+    if area and area != "全部":
+        values = AREA_ALIASES.get(area, (area,))
+        clauses.append("area IN (" + ", ".join(["%s"] * len(values)) + ")")
+        params.extend(values)
+
     return " AND ".join(clauses), params
 
 
@@ -168,9 +208,10 @@ async def _query_catalog(
     count: int,
     sort: str,
     min_score: float = 0.0,
+    area: str | None = None,
 ) -> tuple[int, list]:
     year, labels = _parse_tags(tags)
-    where, params = _where(media_type, labels, year)
+    where, params = _where(media_type, labels, year, area)
     if min_score > 0:
         params.append(min_score)
         where += " AND score >= %s"
@@ -260,12 +301,13 @@ async def douban_compatible(
     tags: str = "",
     sort: str = "U",
     min_score: float = Query(0, ge=0, le=10),
+    area: str = "",
 ):
     if media_type not in {"movie", "tv"}:
         raise HTTPException(status_code=404, detail="unknown media type")
     total, rows = await _query_catalog(
         media_type=media_type, tags=tags, start=start, count=count, sort=sort,
-        min_score=min_score,
+        min_score=min_score, area=area.strip() or None,
     )
     items = [_compat_item(request, row) for row in rows]
     return {
@@ -285,8 +327,9 @@ async def douban_compatible_alias(
     count: int = Query(20, ge=1, le=100),
     tags: str = "",
     sort: str = "U",
+    area: str = "",
 ):
-    return await douban_compatible(media_type, request, start, count, tags, sort)
+    return await douban_compatible(media_type, request, start, count, tags, sort, 0.0, area)
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +354,7 @@ async def list_videos(
     category: str = Query("全部"),
     year: str = Query("全部"),
     sort: str = Query("time", pattern="^(time|score|hot)$"),
+    area: str = Query(""),
     page: int = Query(1, ge=1),
     page_size: int = Query(28, ge=1, le=100),
 ):
@@ -318,7 +362,7 @@ async def list_videos(
         raise HTTPException(status_code=400, detail="unknown category")
     media_type, labels = CATEGORY_MAP[category]
     year_value = int(year) if re.fullmatch(r"(19|20)\d{2}", year) else None
-    where, params = _where(media_type, labels, year_value)
+    where, params = _where(media_type, labels, year_value, area.strip() or None)
     order = {
         "time": ORDERING["R"],
         "score": ORDERING["S"],

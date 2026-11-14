@@ -6,9 +6,11 @@ import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
+from pymysql.err import IntegrityError
 
 from app import db
 from app.config import BASE_DIR, settings
@@ -18,6 +20,7 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 TEMPLATE = Path(BASE_DIR) / "app" / "templates" / "admin.html"
+SOURCES_TEMPLATE = Path(BASE_DIR) / "app" / "templates" / "admin_sources.html"
 
 CATEGORY_BUCKETS = {
     20: "电影",
@@ -49,6 +52,174 @@ class SchedulerRequest(BaseModel):
 @router.get("/admin", include_in_schema=False)
 async def admin_page() -> HTMLResponse:
     return HTMLResponse(TEMPLATE.read_text(encoding="utf-8"))
+
+
+@router.get("/admin/sources", include_in_schema=False)
+async def admin_sources_page() -> HTMLResponse:
+    return HTMLResponse(SOURCES_TEMPLATE.read_text(encoding="utf-8"))
+
+
+class SourceBody(BaseModel):
+    id: int | None = None
+    name: str = Field(min_length=1, max_length=100)
+    url: str = Field(min_length=8, max_length=500)
+    detail: str = Field(default="", max_length=500)
+    enabled: bool = True
+
+
+class SourceState(BaseModel):
+    id: int
+    enabled: bool
+
+
+class SourceId(BaseModel):
+    id: int
+
+
+class SourceImport(BaseModel):
+    url: str = Field(min_length=8, max_length=500)
+
+
+@router.get("/admin/api/sources")
+async def admin_sources(request: Request, x_admin_token: str | None = Header(default=None)):
+    _require_admin(request, x_admin_token)
+    pool = await db.get_pool()
+    rows = await pool.fetch(
+        "SELECT id, name, url, detail, enabled FROM sources ORDER BY sort_order, id"
+    )
+    return {
+        "items": [
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "url": row["url"],
+                "detail": row["detail"],
+                "enabled": bool(row["enabled"]),
+            }
+            for row in rows
+        ]
+    }
+
+
+@router.post("/admin/api/sources")
+async def admin_source_save(
+    body: SourceBody, request: Request, x_admin_token: str | None = Header(default=None)
+):
+    _require_admin(request, x_admin_token)
+    url = body.url.strip()
+    if not re.fullmatch(r"https?://\S+", url):
+        raise HTTPException(status_code=400, detail="接口地址需以 http(s):// 开头")
+    name = body.name.strip() or url
+    detail = body.detail.strip()
+    pool = await db.get_pool()
+    try:
+        if body.id:
+            changed = await pool.execute(
+                "UPDATE sources SET name = %s, url = %s, detail = %s, enabled = %s, "
+                "updated_at = NOW() WHERE id = %s",
+                name, url, detail, 1 if body.enabled else 0, body.id,
+            )
+            if not changed:
+                raise HTTPException(status_code=404, detail="片源不存在")
+        else:
+            # 同一接口地址重复导入时更新名称与详情地址，避免出现重复条目
+            await pool.execute(
+                "INSERT INTO sources (name, url, detail, enabled) VALUES (%s, %s, %s, %s) "
+                "ON DUPLICATE KEY UPDATE name = VALUES(name), detail = VALUES(detail), "
+                "enabled = VALUES(enabled), updated_at = NOW()",
+                name, url, detail, 1 if body.enabled else 0,
+            )
+    except IntegrityError:
+        raise HTTPException(status_code=400, detail="该接口地址已被其他片源占用")
+    return {"ok": True}
+
+
+@router.post("/admin/api/sources/state")
+async def admin_source_state(
+    body: SourceState, request: Request, x_admin_token: str | None = Header(default=None)
+):
+    _require_admin(request, x_admin_token)
+    pool = await db.get_pool()
+    await pool.execute(
+        "UPDATE sources SET enabled = %s, updated_at = NOW() WHERE id = %s",
+        1 if body.enabled else 0, body.id,
+    )
+    return {"ok": True}
+
+
+@router.post("/admin/api/sources/delete")
+async def admin_source_delete(
+    body: SourceId, request: Request, x_admin_token: str | None = Header(default=None)
+):
+    _require_admin(request, x_admin_token)
+    pool = await db.get_pool()
+    await pool.execute("DELETE FROM sources WHERE id = %s", body.id)
+    return {"ok": True}
+
+
+@router.post("/admin/api/sources/import")
+async def admin_source_import(
+    body: SourceImport, request: Request, x_admin_token: str | None = Header(default=None)
+):
+    """从远程 JSON 批量导入片源：链接重复跳过，链接不同但名称相同则更新链接。"""
+    _require_admin(request, x_admin_token)
+    target = body.url.strip()
+    if not re.fullmatch(r"https?://\S+", target):
+        raise HTTPException(status_code=400, detail="请填写 JSON 文件的 http(s) 地址")
+    try:
+        async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+            response = await client.get(target)
+            response.raise_for_status()
+            payload = response.json()
+    except Exception as exc:  # 网络/解析错误统一返回可读信息
+        raise HTTPException(status_code=400, detail=f"拉取或解析失败：{exc}")
+
+    items = payload.get("sources") if isinstance(payload, dict) else payload
+    if not isinstance(items, list):
+        raise HTTPException(status_code=400, detail="JSON 里没有 sources 数组")
+
+    pool = await db.get_pool()
+    rows = await pool.fetch("SELECT id, name, url FROM sources")
+    by_url = {row["url"]: row["id"] for row in rows}
+    by_name = {row["name"]: row["id"] for row in rows}
+
+    added = updated = skipped = invalid = 0
+    for item in items:
+        if not isinstance(item, dict):
+            invalid += 1
+            continue
+        name = str(item.get("name") or "").strip()[:100]
+        url = str(item.get("url") or "").strip()[:500]
+        detail = str(item.get("detail") or "").strip()[:500]
+        if not name or not re.fullmatch(r"https?://\S+", url):
+            invalid += 1
+            continue
+        if url in by_url:
+            skipped += 1
+            continue
+        if name in by_name:
+            await pool.execute(
+                "UPDATE sources SET url = %s, detail = %s, updated_at = NOW() WHERE id = %s",
+                url, detail, by_name[name],
+            )
+            by_url[url] = by_name[name]
+            updated += 1
+            continue
+        new_id = await pool.execute_insert(
+            "INSERT INTO sources (name, url, detail) VALUES (%s, %s, %s)", name, url, detail
+        )
+        by_url[url] = new_id
+        by_name[name] = new_id
+        added += 1
+
+    return {
+        "ok": True,
+        "total": len(items),
+        "added": added,
+        "updated": updated,
+        "skipped": skipped,
+        "invalid": invalid,
+    }
 
 
 @router.get("/admin/api/overview")

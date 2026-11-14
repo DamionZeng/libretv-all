@@ -147,7 +147,7 @@ public final class MainActivity extends Activity {
         }
         getWindow().setFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN, WindowManager.LayoutParams.FLAG_FULLSCREEN);
         try {
-            client=new NasClient(this);discovery=new DiscoveryRepository(this,client.local);sources=client.local.sources();loadSourceSelection();showSearch();
+            client=new NasClient(this);discovery=new DiscoveryRepository(this,client.local);sources=client.local.sources();loadSourceSelection();showSearch();syncRemoteSources();
             String destination=getIntent().getStringExtra("tvDestination");
             if("playlist".equals(destination))showPlaylist();
             else if("settings".equals(destination))showSettings();
@@ -160,7 +160,13 @@ public final class MainActivity extends Activity {
                 JSONObject entry=new JSONObject(getIntent().getStringExtra("resumeEntry"));
                 loadDetail(new JSONObject(entry.getJSONObject("item").toString()).put("favoriteSource",entry.getJSONObject("source")),0,true);
             }else if(getIntent().hasExtra("query")){
-                EditText keyword=new EditText(this);keyword.setText(getIntent().getStringExtra("query"));performSearch(keyword);
+                // 点击影片进入搜索页：片名写进输入框后直接开始搜索，不主动索取输入法焦点。
+                String initial=getIntent().getStringExtra("query");
+                if(searchField!=null){
+                    searchField.setText(initial);
+                    searchField.setSelection(initial.length());
+                    performSearch(searchField);
+                }
             }
         }
         catch(Exception e) { showConfig(); setNotice(e.getMessage()); }
@@ -724,8 +730,10 @@ public final class MainActivity extends Activity {
             });
             content.addView(resultsView, new LinearLayout.LayoutParams(-1, 0, 1));
         if (sources.length() == 0) setNotice("暂无可用来源，请在设置中导入来源。");
-        // 进入搜索页时默认选中顶部的语音图标，按确认即可直接说话搜索。
-        if (navVoice != null) { navVoice.setNextFocusDownId(keywords.getId()); navVoice.requestFocus(); }
+        // 空关键词进入搜索页时默认选中顶部语音图标，按确认即可直接说话搜索；
+        // 带片名进来（从影片卡片跳转）已经自动搜索，焦点给搜索按钮，不弹输入法。
+        if (navVoice != null && query.isEmpty()) { navVoice.setNextFocusDownId(keywords.getId()); navVoice.requestFocus(); }
+        else if (!query.isEmpty()) search.requestFocus();
         else if (results.length() > 0) focusResult(Math.min(resultIndex, results.length() - 1), 0);
         else search.requestFocus();
     }
@@ -872,6 +880,27 @@ public final class MainActivity extends Activity {
         return Math.min(preferred,Math.max(dp(48),available));
     }
     private String sourcePreferenceKey() { return "disabledSources@" + client.origin; }
+    /** 从采集服务拉取后台维护的片源列表并导入本地；导入到新来源后刷新列表，必要时重跑当前搜索。 */
+    private void syncRemoteSources() {
+        if (catalog == null) catalog = new CatalogRepository(this);
+        final CatalogRepository repo = catalog;
+        network.execute(() -> {
+            try {
+                JSONArray remote = repo.remoteSources();
+                if (remote.length() == 0) return;
+                int added = client.local.importSources(new JSONObject().put("sources", remote).toString());
+                if (added <= 0) return;
+                main.post(() -> {
+                    try {
+                        sources = client.local.sources();
+                        loadSourceSelection();
+                        if (searchField != null && searchField.getText().toString().trim().length() > 0) performSearch(searchField);
+                        else if (screen == Screen.SEARCH) showSearch();
+                    } catch (Exception ignored) { }
+                });
+            } catch (Exception ignored) { }
+        });
+    }
     private void loadSourceSelection() throws Exception {
         if(getPreferences(MODE_PRIVATE).contains(sourcePreferenceKey())) {
             Set<String> disabled=getPreferences(MODE_PRIVATE).getStringSet(sourcePreferenceKey(),Collections.emptySet());
