@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import html as html_lib
+import json
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -40,62 +41,61 @@ INSERT INTO videos (
     serial, total, is_end, pubdate, duration, episode_count,
     source_updated_at, fetched_at, updated_at
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7, $8,
-    $9, $10, $11, $12, $13, $14, $15, $16,
-    $17, $18, $19, $20, $21, $22, $23,
-    $24, NULL, $25, $26, $27, $28,
-    $29, $30, $31, $32, $33, $34,
-    $35, now(), now()
+    %s, %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s, %s,
+    %s, NULL, %s, %s, %s, %s,
+    %s, %s, %s, %s, %s, %s,
+    %s, NOW(), NOW()
 )
-ON CONFLICT (id) DO UPDATE SET
-    name = EXCLUDED.name,
-    sub_name = EXCLUDED.sub_name,
-    en_name = EXCLUDED.en_name,
-    type_id = EXCLUDED.type_id,
-    type_id_1 = EXCLUDED.type_id_1,
-    type_name = EXCLUDED.type_name,
-    vod_class = EXCLUDED.vod_class,
-    genres = EXCLUDED.genres,
-    year = EXCLUDED.year,
-    area = EXCLUDED.area,
-    lang = EXCLUDED.lang,
-    remarks = EXCLUDED.remarks,
-    score = EXCLUDED.score,
-    score_all = EXCLUDED.score_all,
-    score_num = EXCLUDED.score_num,
-    douban_id = EXCLUDED.douban_id,
-    douban_score = EXCLUDED.douban_score,
-    actor = EXCLUDED.actor,
-    director = EXCLUDED.director,
-    writer = EXCLUDED.writer,
-    blurb = EXCLUDED.blurb,
-    content = EXCLUDED.content,
-    pic_source = EXCLUDED.pic_source,
-    poster_path = CASE
-        WHEN videos.pic_source IS DISTINCT FROM EXCLUDED.pic_source THEN NULL
-        ELSE videos.poster_path
-    END,
-    hits = EXCLUDED.hits,
-    hits_day = EXCLUDED.hits_day,
-    hits_week = EXCLUDED.hits_week,
-    hits_month = EXCLUDED.hits_month,
-    serial = EXCLUDED.serial,
-    total = EXCLUDED.total,
-    is_end = EXCLUDED.is_end,
-    pubdate = EXCLUDED.pubdate,
-    duration = EXCLUDED.duration,
-    episode_count = EXCLUDED.episode_count,
-    source_updated_at = EXCLUDED.source_updated_at,
-    fetched_at = now(),
-    updated_at = CASE
-        WHEN ROW(videos.name, videos.pic_source, videos.source_updated_at,
-                 videos.score, videos.remarks)
-             IS DISTINCT FROM
-             ROW(EXCLUDED.name, EXCLUDED.pic_source, EXCLUDED.source_updated_at,
-                 EXCLUDED.score, EXCLUDED.remarks)
-        THEN now()
-        ELSE videos.updated_at
-    END
+ON DUPLICATE KEY UPDATE
+    -- 先算 updated_at / poster_path，再覆盖其它列，保证引用到的是旧值
+    updated_at = IF(
+        videos.name <=> VALUES(name)
+        AND videos.pic_source <=> VALUES(pic_source)
+        AND videos.source_updated_at <=> VALUES(source_updated_at)
+        AND videos.score <=> VALUES(score)
+        AND videos.remarks <=> VALUES(remarks),
+        videos.updated_at, NOW()
+    ),
+    poster_path = IF(
+        videos.pic_source <=> VALUES(pic_source), videos.poster_path, NULL
+    ),
+    name = VALUES(name),
+    sub_name = VALUES(sub_name),
+    en_name = VALUES(en_name),
+    type_id = VALUES(type_id),
+    type_id_1 = VALUES(type_id_1),
+    type_name = VALUES(type_name),
+    vod_class = VALUES(vod_class),
+    genres = VALUES(genres),
+    year = VALUES(year),
+    area = VALUES(area),
+    lang = VALUES(lang),
+    remarks = VALUES(remarks),
+    score = VALUES(score),
+    score_all = VALUES(score_all),
+    score_num = VALUES(score_num),
+    douban_id = VALUES(douban_id),
+    douban_score = VALUES(douban_score),
+    actor = VALUES(actor),
+    director = VALUES(director),
+    writer = VALUES(writer),
+    blurb = VALUES(blurb),
+    content = VALUES(content),
+    pic_source = VALUES(pic_source),
+    hits = VALUES(hits),
+    hits_day = VALUES(hits_day),
+    hits_week = VALUES(hits_week),
+    hits_month = VALUES(hits_month),
+    serial = VALUES(serial),
+    total = VALUES(total),
+    is_end = VALUES(is_end),
+    pubdate = VALUES(pubdate),
+    duration = VALUES(duration),
+    episode_count = VALUES(episode_count),
+    source_updated_at = VALUES(source_updated_at),
+    fetched_at = NOW()
 """
 
 
@@ -174,7 +174,13 @@ def _source_time(value: Any) -> datetime | None:
         return None
     for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
         try:
-            return datetime.strptime(text, fmt).replace(tzinfo=CST).astimezone(timezone.utc)
+            # MySQL DATETIME 不带时区，统一存 UTC 的 naive 时间
+            return (
+                datetime.strptime(text, fmt)
+                .replace(tzinfo=CST)
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+            )
         except ValueError:
             continue
     return None
@@ -202,16 +208,16 @@ def normalize(item: dict, base_url: str, poster: str | None = None) -> tuple:
     display_score = _score(item.get("vod_douban_score"), item.get("vod_score"))
 
     return (
-        vod_id,                                        # $1
-        name,                                          # $2
-        _text(item.get("vod_sub"), 300),               # $3
-        _text(item.get("vod_en"), 300),                # $4
-        _int(item.get("type_id")),                     # $5
-        _int(item.get("type_id_1")),                   # $6
-        _text(item.get("type_name"), 100),             # $7
-        _text(item.get("vod_class"), 300),             # $8
-        _genres(item),                                 # $9
-        _year(item.get("vod_year")),                   # $10
+        vod_id,                                        # 1
+        name,                                          # 2
+        _text(item.get("vod_sub"), 300),               # 3
+        _text(item.get("vod_en"), 300),                # 4
+        _int(item.get("type_id")),                     # 5
+        _int(item.get("type_id_1")),                   # 6
+        _text(item.get("type_name"), 100),             # 7
+        _text(item.get("vod_class"), 300),             # 8
+        json.dumps(_genres(item), ensure_ascii=False),  # 9  genres(JSON)
+        _year(item.get("vod_year")),                   # 10
         _text(item.get("vod_area"), 100),              # $11
         _text(item.get("vod_lang"), 100),              # $12
         remarks,                                       # $13

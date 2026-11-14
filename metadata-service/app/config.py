@@ -69,7 +69,7 @@ def _load() -> Settings:
     return Settings(
         database_url=_str(
             "DATABASE_URL",
-            "postgresql://postgres:postgres@127.0.0.1:5432/libretv_metadata",
+            "mysql://root:root@127.0.0.1:3306/libretv_metadata",
         ),
         source_domains=domains or ("https://bfzy.tv",),
         site_page_size=max(1, min(_int("SITE_PAGE_SIZE", 50), 50)),

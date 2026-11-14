@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -14,17 +15,18 @@ router = APIRouter()
 BASE_FILTER = (
     "name <> '' AND pic_source IS NOT NULL "
     "AND year IS NOT NULL AND year BETWEEN 1900 AND 2100 "
-    "AND type_id IS DISTINCT FROM 29"
+    "AND (type_id IS NULL OR type_id <> 29)"
 )
 MOVIE_BASE = "type_id_1 = 20"
 TV_BASE = "type_id_1 = 30"
 ALL_BASE = "type_id_1 IN (20, 30, 39, 45, 58)"
 
+# MySQL 中 DESC 排序 NULL 自动排在最后，无需 NULLS LAST
 ORDERING = {
-    "S": "score DESC NULLS LAST, score_num DESC NULLS LAST, hits DESC NULLS LAST, id DESC",
-    "R": "source_updated_at DESC NULLS LAST, id DESC",
-    "T": "source_updated_at DESC NULLS LAST, id DESC",
-    "U": "hits DESC NULLS LAST, source_updated_at DESC NULLS LAST, id DESC",
+    "S": "score DESC, score_num DESC, hits DESC, id DESC",
+    "R": "source_updated_at DESC, id DESC",
+    "T": "source_updated_at DESC, id DESC",
+    "U": "hits DESC, source_updated_at DESC, id DESC",
 }
 
 CARD_COLUMNS = """
@@ -40,35 +42,22 @@ def _poster_url(request: Request, video_id: int) -> str:
     return f"{_base_url(request)}/media/posters/{video_id}"
 
 
+def _genres(value) -> list[str]:
+    """MySQL JSON 列读出的是字符串，PG 数组则是列表，这里统一成 list。"""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    return [str(v) for v in parsed] if isinstance(parsed, list) else []
+
+
 LOOKUP_COLUMNS = """
     id, name, sub_name, year, area, lang, type_name, genres, score, score_num,
     remarks, actor, director, writer, blurb, episode_count, is_end, hits
-"""
-
-LOOKUP_SQL = f"""
-SELECT {LOOKUP_COLUMNS}
-FROM videos
-WHERE (name = $1 OR sub_name = $1)
-  AND ($2::int IS NULL OR year = $2)
-ORDER BY (name = $1) DESC, score_num DESC NULLS LAST, hits DESC NULLS LAST
-LIMIT 1
-"""
-
-LOOKUP_FUZZY_SQL = f"""
-SELECT {LOOKUP_COLUMNS}
-FROM videos
-WHERE (name ILIKE '%' || $1 || '%' OR sub_name ILIKE '%' || $1 || '%')
-ORDER BY (year = $2) DESC NULLS LAST, similarity(name, $1) DESC, score_num DESC NULLS LAST
-LIMIT 1
-"""
-
-# 片源标题常带「粤语 / 国语 / HD」等后缀，库里是干净片名，反向包含匹配兜底
-LOOKUP_CONTAINS_SQL = f"""
-SELECT {LOOKUP_COLUMNS}
-FROM videos
-WHERE length(name) >= 2 AND $1 ILIKE '%' || name || '%'
-ORDER BY length(name) DESC, score_num DESC NULLS LAST, hits DESC NULLS LAST
-LIMIT 1
 """
 
 
@@ -79,18 +68,49 @@ async def lookup_video(
     year: int | None = Query(None, ge=1900, le=2100),
 ):
     """按片名反查本地元数据，供 App 详情页补充简介、演职员、评分等信息。"""
+    text = title.strip()
     pool = await db.get_pool()
-    keyword = title.strip()
-    row = await pool.fetchrow(LOOKUP_SQL, keyword, year)
+
+    sql = f"SELECT {LOOKUP_COLUMNS} FROM videos WHERE (name = %s OR sub_name = %s)"
+    params: list = [text, text]
+    if year is not None:
+        sql += " AND year = %s"
+        params.append(year)
+    sql += " ORDER BY (name = %s) DESC, score_num DESC, hits DESC LIMIT 1"
+    params.append(text)
+    row = await pool.fetchrow(sql, *params)
+
     if row is None:
-        row = await pool.fetchrow(LOOKUP_FUZZY_SQL, keyword, year)
+        like = f"%{text}%"
+        sql = (
+            f"SELECT {LOOKUP_COLUMNS} FROM videos "
+            "WHERE name LIKE %s OR sub_name LIKE %s"
+        )
+        params = [like, like]
+        if year is not None:
+            sql += " AND year = %s"
+            params.append(year)
+        sql += " ORDER BY score_num DESC, hits DESC LIMIT 1"
+        row = await pool.fetchrow(sql, *params)
+
     if row is None:
-        row = await pool.fetchrow(LOOKUP_CONTAINS_SQL, keyword)
+        # 片源标题带「粤语 / 国语 / HD」等后缀时，反向用库内片名做包含匹配
+        sql = (
+            f"SELECT {LOOKUP_COLUMNS} FROM videos "
+            "WHERE %s LIKE CONCAT('%%', name, '%%') AND CHAR_LENGTH(name) >= 2"
+        )
+        params = [text]
+        if year is not None:
+            sql += " AND year = %s"
+            params.append(year)
+        sql += " ORDER BY CHAR_LENGTH(name) DESC, score_num DESC LIMIT 1"
+        row = await pool.fetchrow(sql, *params)
+
     if row is None:
         raise HTTPException(status_code=404, detail="video not found")
     data = dict(row)
-    data["genres"] = list(data.get("genres") or [])
-    data["pic"] = _poster_url(request, row["id"])
+    data["genres"] = _genres(data.get("genres"))
+    data["pic"] = _poster_url(request, int(row["id"]))
     return data
 
 
@@ -118,14 +138,14 @@ def _where(media_type: str | None, labels: list[str], year: int | None) -> tuple
     elif label == "动画":
         clauses.append("type_id_1 = 39")
     elif label == "纪录片":
-        clauses.append("(type_id = 28 OR '纪录片' = ANY(genres))")
+        clauses.append("(type_id = 28 OR JSON_CONTAINS(genres, %s))")
+        params.append(json.dumps("纪录片", ensure_ascii=False))
     elif label == "短片":
         clauses.append("type_id_1 = 58")
     elif label:
-        params.append(label)
-        clauses.append(
-            f"(${len(params)} = ANY(genres) OR type_name ILIKE '%' || ${len(params)} || '%')"
-        )
+        params.append(json.dumps(label, ensure_ascii=False))
+        params.append(f"%{label}%")
+        clauses.append("(JSON_CONTAINS(genres, %s) OR type_name LIKE %s)")
     elif media_type == "movie":
         clauses.append(MOVIE_BASE)
     elif media_type == "tv":
@@ -135,7 +155,7 @@ def _where(media_type: str | None, labels: list[str], year: int | None) -> tuple
 
     if year is not None:
         params.append(year)
-        clauses.append(f"year = ${len(params)}")
+        clauses.append("year = %s")
 
     return " AND ".join(clauses), params
 
@@ -153,7 +173,7 @@ async def _query_catalog(
     where, params = _where(media_type, labels, year)
     if min_score > 0:
         params.append(min_score)
-        where += f" AND score >= ${len(params)}"
+        where += " AND score >= %s"
     order = ORDERING.get((sort or "U").upper(), ORDERING["U"])
     start = max(0, start)
     count = max(1, min(count, 100))
@@ -161,10 +181,9 @@ async def _query_catalog(
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", *params)
-        limit_index, offset_index = len(params) + 1, len(params) + 2
         rows = await conn.fetch(
             f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
-            f"ORDER BY {order} LIMIT ${limit_index} OFFSET ${offset_index}",
+            f"ORDER BY {order} LIMIT %s OFFSET %s",
             *params, count, start,
         )
     return int(total), rows
@@ -172,7 +191,7 @@ async def _query_catalog(
 
 def _compat_item(request: Request, row) -> dict:
     score = float(row["score"]) if row["score"] is not None else 0.0
-    genres = list(row["genres"] or [])
+    genres = _genres(row["genres"])
     poster = _poster_url(request, int(row["id"]))
     subtitle = f"{row['year']} / {row['area'] or ''} / {' '.join(genres)}"
     return {
@@ -303,7 +322,7 @@ async def list_videos(
     order = {
         "time": ORDERING["R"],
         "score": ORDERING["S"],
-        "hot": "hits DESC NULLS LAST, source_updated_at DESC NULLS LAST",
+        "hot": "hits DESC, source_updated_at DESC",
     }[sort]
 
     pool = await db.get_pool()
@@ -313,7 +332,7 @@ async def list_videos(
             f"SELECT id, name, sub_name, year, area, lang, type_name, genres, score, "
             f"score_num, remarks, actor, director, hits, is_end, episode_count, "
             f"source_updated_at, pic_source FROM videos WHERE {where} "
-            f"ORDER BY {order} LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            f"ORDER BY {order} LIMIT %s OFFSET %s",
             *params, page_size, (page - 1) * page_size,
         )
 
@@ -326,7 +345,7 @@ async def list_videos(
             "actor": row["actor"],
             "director": row["director"],
             "hits": row["hits"],
-            "is_end": row["is_end"],
+            "is_end": bool(row["is_end"]),
             "episode_count": row["episode_count"],
             "updated_at": row["source_updated_at"],
         })
@@ -344,11 +363,13 @@ async def list_videos(
 @router.get("/api/v1/videos/{video_id}")
 async def video_detail(video_id: int):
     pool = await db.get_pool()
-    row = await pool.fetchrow("SELECT * FROM videos WHERE id = $1", video_id)
+    row = await pool.fetchrow("SELECT * FROM videos WHERE id = %s", video_id)
     if row is None:
         raise HTTPException(status_code=404, detail="video not found")
     payload = dict(row)
     payload["id"] = str(payload["id"])
+    payload["genres"] = _genres(payload.get("genres"))
+    payload["is_end"] = bool(payload.get("is_end"))
     if payload.get("douban_id") is not None:
         payload["douban_id"] = str(payload["douban_id"])
     return payload
@@ -369,7 +390,7 @@ async def rankings(
     async with pool.acquire() as conn:
         rows = await conn.fetch(
             f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
-            f"ORDER BY {ORDERING['S']} LIMIT ${len(params) + 1}",
+            f"ORDER BY {ORDERING['S']} LIMIT %s",
             *params, limit,
         )
     return {"items": [_compat_item(request, row) for row in rows]}
@@ -383,14 +404,15 @@ async def search(
     page_size: int = Query(28, ge=1, le=100),
 ):
     pattern = f"%{q.strip()}%"
-    where = f"{BASE_FILTER} AND (name ILIKE $1 OR sub_name ILIKE $1)"
+    where = f"{BASE_FILTER} AND (name LIKE %s OR sub_name LIKE %s)"
+    params = [pattern, pattern]
     pool = await db.get_pool()
     async with pool.acquire() as conn:
-        total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", pattern)
+        total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", *params)
         rows = await conn.fetch(
             f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
-            f"ORDER BY {ORDERING['S']} LIMIT $2 OFFSET $3",
-            pattern, page_size, (page - 1) * page_size,
+            f"ORDER BY {ORDERING['S']} LIMIT %s OFFSET %s",
+            *params, page_size, (page - 1) * page_size,
         )
     return {
         "total": int(total),
@@ -443,8 +465,8 @@ async def admin_sync(
     _require_admin(x_admin_token)
     pool = await db.get_pool()
     await pool.execute(
-        "UPDATE sync_settings SET requested_mode = $1, requested_at = now(), "
-        "updated_at = now() WHERE id = 1",
+        "UPDATE sync_settings SET requested_mode = %s, requested_at = NOW(), "
+        "updated_at = NOW() WHERE id = 1",
         mode,
     )
     return {"status": "queued", "mode": mode}

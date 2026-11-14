@@ -50,7 +50,7 @@ async def _download(video_id: int, url: str, client: httpx.AsyncClient) -> Path 
     lock = await _lock_for(video_id)
     async with lock:
         pool = await db.get_pool()
-        row = await pool.fetchrow("SELECT poster_path FROM videos WHERE id = $1", video_id)
+        row = await pool.fetchrow("SELECT poster_path FROM videos WHERE id = %s", video_id)
         if row and row["poster_path"]:
             cached = settings.image_cache_dir / row["poster_path"]
             if cached.exists():
@@ -81,7 +81,7 @@ async def _download(video_id: int, url: str, client: httpx.AsyncClient) -> Path 
 
         relative = target.relative_to(settings.image_cache_dir)
         await pool.execute(
-            "UPDATE videos SET poster_path = $1 WHERE id = $2 AND pic_source = $3",
+            "UPDATE videos SET poster_path = %s WHERE id = %s AND pic_source = %s",
             str(relative), video_id, url,
         )
         return target
@@ -109,7 +109,7 @@ def _schedule_warm(video_id: int, url: str, client: httpx.AsyncClient) -> None:
 async def get_poster(video_id: int, request: Request):
     pool = await db.get_pool()
     row = await pool.fetchrow(
-        "SELECT id, pic_source, poster_path FROM videos WHERE id = $1", video_id
+        "SELECT id, pic_source, poster_path FROM videos WHERE id = %s", video_id
     )
     if row is None:
         raise HTTPException(status_code=404, detail="video not found")

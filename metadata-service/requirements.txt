@@ -10,10 +10,16 @@ anyio==4.16.0
     #   httpx
     #   starlette
     #   watchfiles
-asyncpg==0.32.0
+aiomysql==0.3.2
     # via libretv-metadata-service
+asyncpg==0.32.0
+    # 仅用于 pg -> mysql 一次性数据迁移脚本
 beautifulsoup4==4.15.0
     # via libretv-metadata-service
+cryptography==50.0.2
+    # MySQL 8 caching_sha2_password 认证需要
+PyMySQL==1.2.4
+    # via aiomysql
 certifi==2026.10.23
     # via
     #   httpcore

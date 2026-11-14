@@ -58,11 +58,11 @@ async def overview(request: Request, x_admin_token: str | None = Header(default=
     async with pool.acquire() as conn:
         stats = await conn.fetchrow(
             "SELECT count(*) AS videos, "
-            "count(*) FILTER (WHERE pic_source IS NOT NULL) AS with_poster, "
-            "count(*) FILTER (WHERE poster_path IS NOT NULL) AS cached_posters, "
-            "count(*) FILTER (WHERE year IS NOT NULL) AS with_year, "
-            "count(*) FILTER (WHERE source_updated_at > now() - interval '24 hours') AS updated_24h, "
-            "count(*) FILTER (WHERE created_at > now() - interval '24 hours') AS added_24h "
+            "SUM(pic_source IS NOT NULL) AS with_poster, "
+            "SUM(poster_path IS NOT NULL) AS cached_posters, "
+            "SUM(year IS NOT NULL) AS with_year, "
+            "SUM(source_updated_at > NOW() - INTERVAL 24 HOUR) AS updated_24h, "
+            "SUM(created_at > NOW() - INTERVAL 24 HOUR) AS added_24h "
             "FROM videos"
         )
         state = await conn.fetchrow(
@@ -163,7 +163,7 @@ async def runs(
         rows = await conn.fetch(
             "SELECT id, mode, status, started_at, finished_at, pages_done, "
             "items_fetched, items_upserted, items_failed, items_inserted, "
-            "items_updated, error FROM sync_runs ORDER BY id DESC LIMIT $1 OFFSET $2",
+            "items_updated, error FROM sync_runs ORDER BY id DESC LIMIT %s OFFSET %s",
             limit, offset,
         )
     return {"total": int(total), "items": [dict(row) for row in rows]}
@@ -172,6 +172,21 @@ async def runs(
 LOG_WINDOW_PAD = timedelta(seconds=5)
 LOG_RETENTION_DAYS = 30
 LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}),(\d{3}) ")
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _local(value: datetime) -> datetime:
+    """把库里的 naive UTC 时间转成本地时区的 naive 时间。"""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone().replace(tzinfo=None)
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
 
 def _parse_ts(line: str) -> datetime | None:
@@ -222,15 +237,16 @@ async def service_logs(
     if run_id is not None:
         pool = await db.get_pool()
         row = await pool.fetchrow(
-            "SELECT id, mode, status, started_at, finished_at FROM sync_runs WHERE id = $1",
+            "SELECT id, mode, status, started_at, finished_at FROM sync_runs WHERE id = %s",
             run_id,
         )
         if row is None:
             raise HTTPException(status_code=404, detail="run not found")
         run = dict(row)
-        start = row["started_at"].astimezone().replace(tzinfo=None) - LOG_WINDOW_PAD
-        finished = row["finished_at"] or datetime.now(timezone.utc)
-        end = finished.astimezone().replace(tzinfo=None) + LOG_WINDOW_PAD
+        # MySQL DATETIME 存的是 UTC 的 naive 时间，按 UTC 解释后再转本地时区
+        start = _local(row["started_at"]) - LOG_WINDOW_PAD
+        finished = row["finished_at"] or _utcnow()
+        end = _local(finished) + LOG_WINDOW_PAD
         files = _candidate_files(start, end)
     else:
         files = [settings.log_file] if settings.log_file.exists() else []
@@ -264,7 +280,7 @@ async def service_logs(
     finished_at = run["finished_at"] if run else None
     expired = bool(
         run and finished_at
-        and datetime.now(timezone.utc) - finished_at > timedelta(days=LOG_RETENTION_DAYS)
+        and _utcnow() - _aware(finished_at) > timedelta(days=LOG_RETENTION_DAYS)
     )
 
     return {
@@ -297,11 +313,11 @@ async def browse_videos(
     params: list = []
     if q.strip():
         params.append(f"%{q.strip()}%")
-        clauses.append(f"name ILIKE ${len(params)}")
+        clauses.append("name LIKE %s")
     if category != "all" and category.isdigit():
         params.append(int(category))
-        clauses.append(f"type_id_1 = ${len(params)}")
-    where = " AND ".join(clauses) if clauses else "TRUE"
+        clauses.append("type_id_1 = %s")
+    where = " AND ".join(clauses) if clauses else "1 = 1"
 
     pool = await db.get_pool()
     async with pool.acquire() as conn:
@@ -309,8 +325,8 @@ async def browse_videos(
         rows = await conn.fetch(
             "SELECT id, name, type_name, year, area, score, score_num, hits, "
             "pic_source, poster_path, source_updated_at, created_at "
-            f"FROM videos WHERE {where} ORDER BY source_updated_at DESC NULLS LAST, id DESC "
-            f"LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            f"FROM videos WHERE {where} ORDER BY source_updated_at DESC, id DESC "
+            "LIMIT %s OFFSET %s",
             *params, page_size, (page - 1) * page_size,
         )
     base = settings.public_base_url or str(request.base_url).rstrip("/")
@@ -338,8 +354,8 @@ async def trigger_sync(
     _require_admin(request, x_admin_token)
     pool = await db.get_pool()
     await pool.execute(
-        "UPDATE sync_settings SET requested_mode = $1, requested_at = now(), "
-        "updated_at = now() WHERE id = 1",
+        "UPDATE sync_settings SET requested_mode = %s, requested_at = NOW(), "
+        "updated_at = NOW() WHERE id = 1",
         body.mode,
     )
     return {"status": "queued", "mode": body.mode}
@@ -354,8 +370,8 @@ async def update_scheduler(
     _require_admin(request, x_admin_token)
     pool = await db.get_pool()
     await pool.execute(
-        "UPDATE sync_settings SET scheduler_enabled = $1, interval_minutes = $2, "
-        "updated_at = now() WHERE id = 1",
+        "UPDATE sync_settings SET scheduler_enabled = %s, interval_minutes = %s, "
+        "updated_at = NOW() WHERE id = 1",
         body.enabled, body.interval_minutes,
     )
     return {"status": "ok", **body.model_dump()}
