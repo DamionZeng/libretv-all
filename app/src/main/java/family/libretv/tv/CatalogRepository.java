@@ -11,7 +11,7 @@ import java.util.*;
 import java.util.concurrent.*;
 
 /**
- * 豆瓣展示层：只提供片名、评分、年份、类型与海报等元数据，用于首页、片库和榜单的展示。
+ * 片库展示层：从自建采集服务读取片名、评分、年份、类型与海报等元数据，用于首页、片库和榜单。
  * 点击条目后仍然走本地 CMS 搜索获取播放来源，因此这里不出现任何播放地址。
  */
 final class CatalogRepository {
@@ -23,18 +23,28 @@ final class CatalogRepository {
     private static final int PAGE_SIZE = 28, HOME_SIZE = 20, RANK_SIZE = 20;
     private static final String MOBILE_UA = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) "
             + "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1";
+    /** 采集服务默认地址，可在打包时用 -PcatalogBase=... 覆盖。 */
+    private static final String DEFAULT_BASE = BuildConfig.CATALOG_BASE_URL;
+    private static final String BASE_KEY = "catalog-base";
     private final SharedPreferences prefs;
 
     CatalogRepository(Context context) {
         prefs = context.getApplicationContext().getSharedPreferences("catalog", 0);
     }
 
-    /** 分类对应的豆瓣入口：type 决定电影/剧集，tag 是分类标签。 */
+    /** 采集服务根地址；SharedPreferences 里的 catalog-base 优先，便于换服务器不用重新打包。 */
+    private String base() {
+        String override = prefs.getString(BASE_KEY, "");
+        String chosen = override == null || override.trim().isEmpty() ? DEFAULT_BASE : override.trim();
+        return chosen.endsWith("/") ? chosen.substring(0, chosen.length() - 1) : chosen;
+    }
+
+    /** 分类对应的接口入口：type 决定电影/剧集，tag 是分类标签。 */
     private static String type(String category) {
         return "短剧".equals(category) || "电影".equals(category) || ALL.equals(category) ? "movie" : "tv";
     }
 
-    /** 「全部」同时查询电影与剧集两个豆瓣入口后再合并。 */
+    /** 「全部」同时查询电影与剧集两个入口后再合并。 */
     private static boolean both(String category) { return ALL.equals(category); }
 
     private static String tag(String category) {
@@ -67,7 +77,7 @@ final class CatalogRepository {
         }
     }
 
-    /** 首页横排使用豆瓣综合排序，取前 20 条。缓存与片库分页分开，避免首页的 20 条覆盖片库第一页。 */
+    /** 首页横排使用综合排序（热度），取前 20 条。缓存与片库分页分开，避免首页的 20 条覆盖片库第一页。 */
     private JSONArray homeRow(String category) throws Exception {
         JSONArray cached = cachedHomeRow(category);
         if (fresh(homeKey(category)) && cached.length() > 0) return cached;
@@ -97,7 +107,7 @@ final class CatalogRepository {
     }
 
     private static String homeKey(String category) {
-        return "home3-" + category;
+        return "home4-" + category;
     }
 
     private JSONArray cachedHomeRow(String category) {
@@ -105,7 +115,7 @@ final class CatalogRepository {
         catch (Exception ignored) { return new JSONArray(); }
     }
 
-    /** 一页片库数据、是否还有下一页以及总页数（由豆瓣 total 计算）。 */
+    /** 一页片库数据、是否还有下一页以及总页数（由接口 total 计算）。 */
     static final class Page {
         final JSONArray items;
         final boolean more;
@@ -113,7 +123,7 @@ final class CatalogRepository {
         Page(JSONArray items, boolean more, int pages) { this.items = items; this.more = more; this.pages = pages; }
     }
 
-    /** 片库分页：不缓存、不做本地过滤，每次翻页/筛选都按参数向豆瓣重新请求。 */
+    /** 片库分页：不缓存、不做本地过滤，每次翻页/筛选都按参数向采集服务重新请求。 */
     Page page(String category, String year, int sort, int pageNo) throws Exception {
         final int requested = Math.max(1, pageNo);
         final String order = sort == SORT_RATE ? "S" : "R";
@@ -121,7 +131,7 @@ final class CatalogRepository {
         boolean more;
         int pages;
         if (both(category)) {
-            // 「全部」= 电影 + 剧集：两个豆瓣入口各取半页，交替合并；页码直接换算成豆瓣的 start 偏移。
+            // 「全部」= 电影 + 剧集：两个入口各取半页，交替合并；页码直接换算成 start 偏移。
             final int half = PAGE_SIZE / 2, start = (requested - 1) * half;
             String movieBody = fetch(recommend("电影", tags("电影", year), order, start, half));
             String tvBody = fetch(recommend("电视剧", tags("电视剧", year), order, start, half));
@@ -160,7 +170,7 @@ final class CatalogRepository {
         return out;
     }
 
-    /** 豆瓣接口的 total 字段，用于判断是否还有下一页。 */
+    /** 接口的 total 字段，用于判断是否还有下一页。 */
     private static int totalOf(String body) {
         try {
             return new JSONObject(body).optInt("total", 0);
@@ -169,7 +179,7 @@ final class CatalogRepository {
         }
     }
 
-    /** 豆瓣多标签按「年份,分类」顺序才同时生效，例如 2024,综艺。 */
+    /** 多标签按「年份,分类」顺序传递，例如 2024,综艺。 */
     private static String tags(String category, String year) {
         String categoryTag = tag(category);
         boolean hasYear = year != null && !year.isEmpty() && !ALL.equals(year);
@@ -177,8 +187,8 @@ final class CatalogRepository {
         return categoryTag.isEmpty() ? year : year + "," + categoryTag;
     }
 
-    private static String recommend(String category, String tag, String sort, int start, int count) throws Exception {
-        return "https://m.douban.com/rexxar/api/v2/" + type(category) + "/recommend?refresh=0"
+    private String recommend(String category, String tag, String sort, int start, int count) throws Exception {
+        return base() + "/rexxar/api/v2/" + type(category) + "/recommend?refresh=0"
                 + "&start=" + start
                 + "&count=" + count
                 + "&tags=" + URLEncoder.encode(tag, "UTF-8")
@@ -186,15 +196,31 @@ final class CatalogRepository {
                 + "&type=" + type(category);
     }
 
-    /** 排行榜：豆瓣高分优先的电影，用于片库右侧榜单。 */
-    JSONArray ranking() throws Exception {
-        String key = "rank";
+    /** 按片名反查本地元数据，供详情页补充简介、演职员、评分等信息；1 小时缓存一次。 */
+    JSONObject lookup(String title) throws Exception {
+        String key = "meta-" + title;
+        if (fresh(key)) {
+            JSONObject cached = new JSONObject(prefs.getString(key, "{}"));
+            if (cached.optInt("id", 0) > 0) return cached;
+        }
+        JSONObject meta = new JSONObject(
+                fetch(base() + "/api/v1/lookup?title=" + URLEncoder.encode(title, "UTF-8")));
+        if (meta.optInt("id", 0) > 0) {
+            prefs.edit().putString(key, meta.toString())
+                    .putLong(key + "-at", System.currentTimeMillis()).apply();
+        }
+        return meta;
+    }
+
+    /** 分类榜单：按热度排序并过滤低分条目，避免冷门片占据榜单。 */
+    JSONArray ranking(String category) throws Exception {
+        String key = "rank3-" + category;
         if (fresh(key)) {
             JSONArray cached = new JSONArray(prefs.getString(key, "[]"));
             if (cached.length() > 0) return cached;
         }
-        JSONArray out = parse(fetch("https://m.douban.com/rexxar/api/v2/movie/recommend?refresh=0&start=0"
-                + "&count=" + RANK_SIZE + "&tags=&sort=S&type=movie"), "电影");
+        String url = recommend(category, tags(category, ALL), "U", 0, RANK_SIZE) + "&min_score=6";
+        JSONArray out = parse(fetch(url), category);
         if (out.length() > 0) {
             prefs.edit().putString(key, out.toString()).putLong(key + "-at", System.currentTimeMillis()).apply();
         }
@@ -239,8 +265,8 @@ final class CatalogRepository {
         String name = raw.optString("title").trim();
         JSONObject pic = raw.optJSONObject("pic");
         String cover = pic == null ? "" : pic.optString("normal", pic.optString("large"));
-        // 豆瓣无海报时会给一张默认图，直接丢弃，避免片库出现白色占位卡。
-        if (name.isEmpty() || cover.isEmpty() || cover.contains("_normal.png") || cover.contains("/frodo/")) return null;
+        // 采集库里少数条目源站本身没有海报，直接丢弃，避免片库出现空白占位卡。
+        if (name.isEmpty() || cover.isEmpty()) return null;
         JSONObject rating = raw.optJSONObject("rating");
         String rate = rating == null ? "" : rating.optString("value");
         if ("0".equals(rate) || "0.0".equals(rate)) rate = "";
@@ -252,13 +278,13 @@ final class CatalogRepository {
         try {
             return new JSONObject()
                     .put("name", name)
-                    .put("pic", poster(cover))
+                    .put("pic", cover)
                     .put("rate", rate)
                     .put("year", year)
                     .put("genre", genre)
-                    .put("doubanId", raw.optString("id"))
+                    .put("catalogId", raw.optString("id"))
                     .put("typeName", category)
-                    .put("sourceName", "豆瓣");
+                    .put("sourceName", "片库");
         } catch (JSONException e) {
             return null;
         }
@@ -279,19 +305,18 @@ final class CatalogRepository {
         return at > 0 && System.currentTimeMillis() - at < TTL;
     }
 
-    /** 卡片用小图足够，轮播需要大图，因此按用途替换豆瓣的图片尺寸。 */
-    static String poster(String cover) { return cover.replace("/s_ratio_poster/", "/l_ratio_poster/"); }
+    /** 采集服务已经提供大图，卡片与轮播直接用同一个地址。 */
+    static String poster(String cover) { return cover; }
 
     private static String fetch(String url) throws Exception {
         HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
         connection.setConnectTimeout(8000);
         connection.setReadTimeout(12000);
         connection.setRequestProperty("User-Agent", MOBILE_UA);
-        connection.setRequestProperty("Referer", "https://m.douban.com/movie/");
-        connection.setRequestProperty("Accept", "application/json, text/javascript, */*; q=0.01");
+        connection.setRequestProperty("Accept", "application/json");
         try {
             int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) throw new IOException("豆瓣 HTTP " + code);
+            if (code < 200 || code >= 300) throw new IOException("片库 HTTP " + code);
             return LocalRepository.read(connection.getInputStream(), 4 * 1024 * 1024);
         } finally {
             connection.disconnect();

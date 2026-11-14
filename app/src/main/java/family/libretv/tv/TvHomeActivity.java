@@ -29,9 +29,10 @@ public final class TvHomeActivity extends Activity {
     private int browseRowUsed;
     private TextView homeStatus, browseStatus, browseFooter;
     private boolean browseHasMore;
-    private String page = "home", section = "电影", focusKey = "hero";
+    private String page = "home", section = "电影", focusKey = "nav-voice";
     private String year = CatalogRepository.ALL;
     private int sort = CatalogRepository.SORT_TIME;
+    private String rankCategory = "电影";
     private JSONArray ranking = new JSONArray();
     private boolean rankLoaded, rankLoading;
     private int rankToken;
@@ -135,7 +136,7 @@ public final class TvHomeActivity extends Activity {
         startActivity(new Intent(this, MainActivity.class).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
                 .putExtra("tvDestination", "detail").putExtra("detailItem", item.toString()));
     }
-    /** 豆瓣条目没有片源，点击后带着片名进入搜索页，由现有搜索接口解析出可播放来源。 */
+    /** 片库条目没有片源，点击后带着片名进入搜索页，由现有搜索接口解析出可播放来源。 */
     private void openSearch(String keywords) {
         startActivity(new Intent(this, MainActivity.class).addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
                 .putExtra("tvDestination", "search").putExtra("query", keywords));
@@ -169,7 +170,7 @@ public final class TvHomeActivity extends Activity {
         ImageView mark = new ImageView(this); mark.setImageResource(R.drawable.spark_mark); mark.setContentDescription("星光影院");
         header.addView(mark, new LinearLayout.LayoutParams(dp(22), dp(22)));
         TextView wordmark = heading("星光影院", 21); wordmark.setLetterSpacing(0.02f); wordmark.setPadding(dp(10), 0, dp(26), 0); header.addView(wordmark);
-        button(header, "首页", "nav-home", () -> { page = "home"; focusKey = "hero"; render(); }); navRow.add("nav-home");
+        button(header, "首页", "nav-home", () -> { page = "home"; focusKey = "nav-voice"; render(); }); navRow.add("nav-home");
         button(header, "片库", "nav-library", () -> openBrowse(section)); navRow.add("nav-library");
         button(header, "榜单", "nav-rank", this::openRank); navRow.add("nav-rank");
         navIcon(header, R.drawable.ic_nav_search, "nav-search", "搜索", () -> open("search")); navRow.add("nav-search");
@@ -311,7 +312,7 @@ public final class TvHomeActivity extends Activity {
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2); lp.rightMargin = dp(8); chip.setLayoutParams(lp);
         return chip;
     }
-    /** 豆瓣只提供竖版海报，轮播按中心裁切铺满 16:9 区域。 */
+    /** 采集服务只提供竖版海报，轮播按中心裁切铺满 16:9 区域。 */
     private void showHero() {
         if (hero == null) return;
         hero.removeAllViews();
@@ -378,7 +379,7 @@ public final class TvHomeActivity extends Activity {
         register(card, key, action, SURFACE, 16);
         return card;
     }
-    /** 海报右上角展示类型（取豆瓣类型的第一个），没有类型时退回分类。 */
+    /** 海报右上角展示类型（取元数据类型的第一个），没有类型时退回分类。 */
     private static String cardBadge(JSONObject item) {
         String genre = item.optString("genre");
         if (!genre.isEmpty()) return genre.split(" ")[0];
@@ -411,7 +412,7 @@ public final class TvHomeActivity extends Activity {
                     items = fresh; render();
                 });
             } catch (Exception e) {
-                main.post(() -> { if (!dead && ticket == generation && page.equals("home")) status("豆瓣榜单暂时无法加载"); });
+                main.post(() -> { if (!dead && ticket == generation && page.equals("home")) status("片库榜单暂时无法加载"); });
             }
         });
     }
@@ -481,7 +482,7 @@ public final class TvHomeActivity extends Activity {
         left.addView(browseFooter);
         updateBrowseStatus();
     }
-    /** 列表底部提示：滚动到末尾时自动请求豆瓣下一页，无需点击分页按钮。 */
+    /** 列表底部提示：滚动到末尾时自动请求片库下一页，无需点击分页按钮。 */
     private void updateBrowseFooter() {
         if (browseFooter == null) return;
         if (browseItems.length() == 0) browseFooter.setText("");
@@ -514,13 +515,19 @@ public final class TvHomeActivity extends Activity {
     private void openRank() {
         page = "rank"; focusKey = "rank-0"; render();
     }
-    /** 独立榜单页：豆瓣高分优先，双列展示，点击进入搜索。 */
+    /** 独立榜单页：按分类切换，热播优先，双列展示，点击进入搜索。 */
     private void renderRank() {
-        LinearLayout titleRow = row(body); titleRow.setPadding(0, dp(8), 0, dp(10)); titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout titleRow = row(body); titleRow.setPadding(0, dp(8), 0, dp(6)); titleRow.setGravity(Gravity.CENTER_VERTICAL);
         titleRow.addView(heading("榜单", 30), new LinearLayout.LayoutParams(0, -2, 1));
-        titleRow.addView(text("豆瓣高分优先", 13, TEXT_3));
+        titleRow.addView(text("热播优先", 13, TEXT_3));
+        LinearLayout tabs = row(body); tabs.setPadding(0, 0, 0, dp(10));
+        for (String name : RANK_CATEGORIES) {
+            final String category = name;
+            Button tab = button(tabs, name, "rankcat-" + name, () -> switchRank(category));
+            if (name.equals(rankCategory)) tab.setTextColor(ACCENT);
+        }
         if (ranking.length() == 0) {
-            body.addView(text(rankLoaded ? "榜单暂时无法加载" : "正在加载榜单…", 16, TEXT_2));
+            body.addView(text(rankLoaded ? rankCategory + "榜单暂时无法加载" : "正在加载" + rankCategory + "榜单…", 16, TEXT_2));
             return;
         }
         int total = Math.min(20, ranking.length()), half = (total + 1) / 2;
@@ -552,13 +559,25 @@ public final class TvHomeActivity extends Activity {
         lp.setMargins(dp(4), dp(3), dp(4), dp(3)); parent.addView(line, lp);
         focusRows.add(Collections.singletonList("rank-" + index));
     }
+    private static final String[] RANK_CATEGORIES = {"电影", "电视剧", "综艺", "动漫", "纪录片", "短剧"};
+
+    /** 切换榜单分类：清空旧数据并重新拉取，焦点停留在刚选中的分类上。 */
+    private void switchRank(String category) {
+        if (category.equals(rankCategory)) return;
+        rankCategory = category;
+        ranking = new JSONArray();
+        rankLoaded = false;
+        rankLoading = false;
+        focusKey = "rankcat-" + category;
+        render();
+    }
     private void loadRank(int ticket) {
         if (catalog == null) return;
         rankLoading = true;
         final int token = ++rankToken;
         discoveryWorker.submit(() -> {
             try {
-                JSONArray fresh = catalog.ranking();
+                JSONArray fresh = catalog.ranking(rankCategory);
                 main.post(() -> {
                     if (dead || token != rankToken || !page.equals("rank")) return;
                     ranking = fresh; rankLoaded = true; rankLoading = false; render();
@@ -621,7 +640,7 @@ public final class TvHomeActivity extends Activity {
         }
         browseStatus.setText("已加载 " + browseItems.length() + " 部");
     }
-    /** 片库数据来自豆瓣展示接口：筛选靠 tags、翻页靠 start，全部由豆瓣服务端完成，本地不再过滤。 */
+    /** 片库数据来自采集服务：筛选靠 tags、翻页靠 start，全部由服务端完成，本地不再过滤。 */
     private void loadBrowse(int ticket) {
         if (catalog == null) return;
         browseLoading = true;
@@ -644,12 +663,12 @@ public final class TvHomeActivity extends Activity {
                     browseLoading = false;
                     if (dead || token != browseToken || !page.equals("browse")) return;
                     browseFinished = true;
-                    if (browseStatus != null) browseStatus.setText("豆瓣榜单暂时无法加载");
+                    if (browseStatus != null) browseStatus.setText("片库榜单暂时无法加载");
                 });
             }
         });
     }
-    /** 滚动接近底部时自动请求豆瓣下一页，追加到已有列表末尾（不做全量重绘，保持滚动位置）。 */
+    /** 滚动接近底部时自动请求片库下一页，追加到已有列表末尾（不做全量重绘，保持滚动位置）。 */
     private void loadMoreBrowse() {
         if (catalog == null || browseLoading || !browseHasMore) return;
         browseLoading = true;
@@ -665,7 +684,7 @@ public final class TvHomeActivity extends Activity {
                     browseLoading = false;
                     if (browseItems.length() == 0) return;
                     if (result.items.length() == 0) {
-                        // 豆瓣这一页没有可用条目，视为到底，避免继续空转请求。
+                        // 这一页没有可用条目，视为到底，避免继续空转请求。
                         browseHasMore = false;
                         updateBrowseFooter();
                         return;
@@ -758,12 +777,13 @@ public final class TvHomeActivity extends Activity {
     }
 
     @SuppressWarnings("deprecation") @Override public void onBackPressed() {
-        if (!page.equals("home")) { page = "home"; focusKey = "hero"; render(); }
+        if (!page.equals("home")) { page = "home"; focusKey = "nav-voice"; render(); }
         else super.onBackPressed();
     }
     @Override protected void onSaveInstanceState(Bundle out) {
         out.putString("page", page); out.putString("section", section);
         out.putString("focusKey", focusKey); out.putInt("browsePage", browsePage);
+        out.putString("rankCategory", rankCategory);
         super.onSaveInstanceState(out);
     }
     @Override protected void onStop() {

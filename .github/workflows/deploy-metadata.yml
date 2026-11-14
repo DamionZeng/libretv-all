@@ -1,0 +1,70 @@
+name: Deploy Metadata Service
+
+# 推送 metadata-service 相关改动时自动部署到服务器；也可在 Actions 页面手动触发。
+# 需要在仓库 Settings → Secrets and variables → Actions 中配置：
+#   DEPLOY_HOST     服务器 IP / 域名
+#   DEPLOY_USER     SSH 用户（一般 root）
+#   DEPLOY_SSH_KEY  部署用私钥（对应公钥已加入服务器 ~/.ssh/authorized_keys）
+#   DEPLOY_PORT     SSH 端口，可选，默认 22
+#   DEPLOY_PATH     部署目录，可选，默认 /www/wwwroot/libretv-metadata
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'metadata-service/**'
+      - '.github/workflows/deploy-metadata.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-metadata
+  cancel-in-progress: true
+
+env:
+  DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+  DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+  DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+  DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/www/wwwroot/libretv-metadata' }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          if [ -z "$DEPLOY_HOST" ] || [ -z "$DEPLOY_USER" ]; then
+            echo "::error::缺少 DEPLOY_HOST / DEPLOY_USER，请先在仓库 Secrets 中配置"
+            exit 1
+          fi
+
+      - name: Set up SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.DEPLOY_SSH_KEY }}
+
+      - name: Trust host key
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -p "$DEPLOY_PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+
+      # 只同步代码；.env、data/（日志与海报缓存）、虚拟环境都留在服务器上不被覆盖或删除。
+      - name: Sync code
+        run: |
+          rsync -az --delete \
+            --exclude '.venv' --exclude 'venv' --exclude '*_venv' \
+            --exclude '.env' --exclude 'data' \
+            --exclude '__pycache__' --exclude '*.pyc' \
+            --exclude '*.dump' --exclude '*.log' \
+            -e "ssh -p $DEPLOY_PORT" \
+            metadata-service/ "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/"
+
+      - name: Install deps and restart
+        run: |
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "bash '$DEPLOY_PATH/scripts/deploy-remote.sh'"
+
+      - name: Smoke test
+        run: |
+          ssh -p "$DEPLOY_PORT" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "curl -fsS --max-time 10 http://127.0.0.1:8080/health"

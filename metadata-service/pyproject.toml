@@ -1,0 +1,16 @@
+[project]
+name = "libretv-metadata-service"
+version = "0.1.0"
+description = "暴风资源元数据采集与豆瓣兼容 API"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "python-dotenv>=1.0",
+]
+
+[tool.uv]
+package = false

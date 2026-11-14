@@ -113,6 +113,7 @@ public final class MainActivity extends Activity {
     private JSONObject detailSource;
     private boolean detailFromHome;
     private DiscoveryRepository discovery;
+    private CatalogRepository catalog;
     private final ExecutorService relatedWorker = Executors.newSingleThreadExecutor();
     private ProgressBar playbackProgress;
     private boolean controlsVisible, playerHasFrame;
@@ -191,6 +192,96 @@ public final class MainActivity extends Activity {
     }
     private TextView starlightText(String value,int size,int color){
         TextView t=new TextView(this);t.setText(value);t.setTextSize(size);t.setTextColor(color);return t;
+    }
+    private TextView chip(String value,int textColor,int bgColor){
+        TextView chip=starlightText(value,13,textColor);
+        chip.setPadding(dp(12),dp(5),dp(12),dp(6));
+        chip.setBackground(rounded(bgColor,99));return chip;
+    }
+    private LinearLayout.LayoutParams chipParams(){
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,-2);
+        lp.setMargins(0,0,dp(8),0);return lp;
+    }
+    private static String shorten(String value,int max){
+        return value.length()<=max?value:value.substring(0,max)+"…";
+    }
+    /** 详情页信息行：年份 · 地区 · 类型，自动跳过空值。 */
+    private static String detailLine(String... parts){
+        StringBuilder line=new StringBuilder();
+        for(String part:parts){
+            if(part==null||part.trim().isEmpty())continue;
+            if(line.length()>0)line.append("   ·   ");
+            line.append(part.trim());
+        }
+        return line.toString();
+    }
+    /** 简介真正超出 4 行时才显示「展开简介」，避免短简介也出现按钮。 */
+    private void syncExpand(TextView description,TextView expand,boolean[] expanded){
+        description.post(()->{
+            if(isFinishing()||isDestroyed())return;
+            if(expanded[0]){expand.setVisibility(View.VISIBLE);return;}
+            android.text.Layout layout=description.getLayout();
+            boolean truncated=layout!=null&&layout.getLineCount()>3&&layout.getEllipsisCount(3)>0;
+            expand.setVisibility(truncated?View.VISIBLE:View.GONE);
+        });
+    }
+    /** 详情页区块标题：琥珀竖条 + 标题 + 右侧说明。 */
+    private void sectionTitle(LinearLayout parent,String title,String trail){
+        LinearLayout head=new LinearLayout(this);head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        View bar=new View(this);bar.setBackground(rounded(SACCENT,2));
+        head.addView(bar,new LinearLayout.LayoutParams(dp(4),dp(19)));
+        TextView label=starlightText(title,23,STEXT_1);
+        label.setTypeface(Typeface.create("sans-serif-medium",Typeface.NORMAL));
+        label.setPadding(dp(11),0,0,0);head.addView(label);
+        if(trail!=null&&!trail.isEmpty()){
+            TextView right=starlightText(trail,13,STEXT_3);right.setGravity(Gravity.END);
+            head.addView(right,new LinearLayout.LayoutParams(0,-2,1));
+        }
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-1,-2);
+        lp.setMargins(0,0,0,dp(12));parent.addView(head,lp);
+    }
+    /** 本地元数据返回后补全详情页：评分、类型、更新进度、演职员、简介与更清晰的海报。 */
+    private void fillDetailMeta(JSONObject meta,LinearLayout chips,TextView castLine,TextView description,
+                                TextView expand,boolean[] expanded,ImageView poster,ImageView backdrop,
+                                boolean backdropFallback){
+        if(isFinishing()||isDestroyed())return;
+        chips.removeAllViews();
+        String score=meta.optString("score");
+        if(!score.isEmpty()&&!"0".equals(score)&&!"0.0".equals(score)){
+            chips.addView(chip("★ "+score,SACCENT,0x38e8a33d),chipParams());
+        }
+        JSONArray genres=meta.optJSONArray("genres");
+        for(int i=0;genres!=null&&i<Math.min(3,genres.length());i++){
+            String genre=genres.optString(i);
+            if(!genre.isEmpty())chips.addView(chip(genre,STEXT_1,0x1affffff),chipParams());
+        }
+        String remarks=meta.optString("remarks");
+        int episodeCount=meta.optInt("episode_count");
+        String progress=remarks.isEmpty()?(episodeCount>0?"全 "+episodeCount+" 集":""):remarks;
+        if(!progress.isEmpty())chips.addView(chip(shorten(progress,14),STEXT_2,0x14ffffff),chipParams());
+        chips.setVisibility(chips.getChildCount()>0?View.VISIBLE:View.GONE);
+
+        String actor=meta.optString("actor"),director=meta.optString("director");
+        StringBuilder cast=new StringBuilder();
+        if(!actor.isEmpty())cast.append("主演  ").append(shorten(actor,36));
+        if(!director.isEmpty())cast.append(cast.length()>0?"　　":"").append("导演  ").append(shorten(director,20));
+        castLine.setText(cast);
+        castLine.setVisibility(cast.length()>0?View.VISIBLE:View.GONE);
+
+        String blurb=Html.fromHtml(meta.optString("blurb")).toString().replaceAll("\\s+"," ").trim();
+        if(!blurb.isEmpty()){
+            description.setText(blurb);
+            description.setMaxLines(expanded[0]?14:4);
+            if(expanded[0])expand.setText("收起简介");
+            syncExpand(description,expand,expanded);
+        }
+
+        String pic=meta.optString("pic");
+        if(!pic.isEmpty()){
+            posters.loadPublic(poster,pic,R.drawable.poster_placeholder);
+            if(backdropFallback)posters.loadPublic(backdrop,pic,R.drawable.poster_placeholder);
+        }
     }
     private StateListDrawable detailPrimaryState(){
         StateListDrawable d=new StateListDrawable();
@@ -1049,22 +1140,26 @@ public final class MainActivity extends Activity {
         String coverUrl = detailInfo.optString("cover");
         String artwork = coverUrl.isEmpty() ? selected.optString("pic") : coverUrl;
 
-        /* —— 剧照 Hero：背景剧照 + 左侧/底部渐变遮罩 + 竖版海报 + 信息 —— */
-        FrameLayout hero = new FrameLayout(this); clipRounded(hero, 20);
-        content.addView(hero, new LinearLayout.LayoutParams(-1, -2));
-        hero.setMinimumHeight(dp(360));
+        /* —— 剧照 Hero：通栏剧照 + 侧向/底部渐变 + 竖版海报 + 主信息 —— */
+        FrameLayout hero = new FrameLayout(this);
+        LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, dp(430));
+        heroParams.setMargins(-dp(40), 0, -dp(40), 0);
+        content.addView(hero, heroParams);
         ImageView backdrop = new ImageView(this); backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backdrop.setAlpha(0.6f);
         hero.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
         posters.load(backdrop, client, artwork);
+        View dim = new View(this); dim.setBackgroundColor(0x400e0f11);
+        hero.addView(dim, new FrameLayout.LayoutParams(-1, -1));
         View veil = new View(this);
-        veil.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xf20e0f11, 0xd90e0f11, 0x260e0f11}));
+        veil.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xfa0e0f11, 0xdc0e0f11, 0x6b0e0f11, 0x330e0f11}));
         hero.addView(veil, new FrameLayout.LayoutParams(-1, -1));
         View shade = new View(this);
-        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xf20e0f11, 0x000e0f11}));
-        hero.addView(shade, new FrameLayout.LayoutParams(-1, dp(180), Gravity.BOTTOM));
+        shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xff0e0f11, 0xcc0e0f11, 0x000e0f11}));
+        hero.addView(shade, new FrameLayout.LayoutParams(-1, dp(250), Gravity.BOTTOM));
 
         LinearLayout heroBody = new LinearLayout(this); heroBody.setOrientation(LinearLayout.HORIZONTAL);
-        heroBody.setGravity(Gravity.BOTTOM); heroBody.setPadding(dp(30), dp(24), dp(30), dp(26));
+        heroBody.setGravity(Gravity.BOTTOM); heroBody.setPadding(dp(64), dp(26), dp(64), dp(30));
         hero.addView(heroBody, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
         Button back = new Button(this);
@@ -1077,10 +1172,11 @@ public final class MainActivity extends Activity {
         back.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(6) : 0));
         back.setOnClickListener(v -> { if (!busy) returnFromDetail(); });
         FrameLayout.LayoutParams backParams = new FrameLayout.LayoutParams(-2, dp(40), Gravity.TOP | Gravity.START);
-        backParams.setMargins(dp(24), dp(20), 0, 0); hero.addView(back, backParams);
+        backParams.setMargins(dp(64), dp(22), 0, 0); hero.addView(back, backParams);
 
-        FrameLayout posterFrame = new FrameLayout(this); posterFrame.setBackground(rounded(SSURFACE, 14)); clipRounded(posterFrame, 14);
-        heroBody.addView(posterFrame, new LinearLayout.LayoutParams(dp(168), dp(238)));
+        FrameLayout posterFrame = new FrameLayout(this); posterFrame.setBackground(rounded(SSURFACE, 16)); clipRounded(posterFrame, 16);
+        posterFrame.setElevation(dp(12));
+        heroBody.addView(posterFrame, new LinearLayout.LayoutParams(dp(178), dp(252)));
         ImageView poster = new ImageView(this); poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         posterFrame.addView(poster, new FrameLayout.LayoutParams(-1, -1)); posters.load(poster, client, artwork);
 
@@ -1092,24 +1188,23 @@ public final class MainActivity extends Activity {
         TextView sourceName = starlightText(selected.optString("sourceName"), 13, SACCENT);
         sourceName.setLetterSpacing(0.08f); sourceName.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
         kicker.addView(sourceName);
-        kicker.addView(starlightText("   ·   全 " + episodes.length() + " 集", 13, STEXT_3));
+        kicker.addView(starlightText(episodes.length() > 1 ? "   ·   全 " + episodes.length() + " 集" : "   ·   正片", 13, STEXT_3));
 
-        TextView name = starlightText(title, 34, STEXT_1); name.setMaxLines(2);
+        TextView name = starlightText(title, 38, STEXT_1); name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(8), 0, 0);
         info.addView(name);
 
-        String summary = (detailInfo.optString("year") + "   " + detailInfo.optString("area") + "   " + detailInfo.optString("typeName")).trim();
-        if (!summary.isEmpty()) {
-            TextView meta = starlightText(summary.replaceAll("\\s+", "   ").trim(), 15, STEXT_2);
-            meta.setPadding(0, dp(8), 0, 0); info.addView(meta);
-        }
+        // 评分 / 类型 / 更新进度标签，等本地元数据返回后填充
+        LinearLayout chips = row(); chips.setPadding(0, dp(12), 0, 0); chips.setVisibility(View.GONE);
+        info.addView(chips);
+        TextView castLine = starlightText("", 13, STEXT_3); castLine.setPadding(0, dp(10), 0, 0);
+        castLine.setSingleLine(true); castLine.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        castLine.setVisibility(View.GONE); info.addView(castLine);
 
-        TextView description = starlightText("", 14, STEXT_2); description.setMaxLines(3);
-        description.setEllipsize(android.text.TextUtils.TruncateAt.END); description.setLineSpacing(dp(4), 1f);
-        String desc = detailInfo.optString("desc");
-        description.setText(desc.isEmpty() ? "选好剧集，开始观看。" : Html.fromHtml(desc));
-        description.setPadding(0, dp(12), 0, 0); info.addView(description);
+        TextView meta = starlightText(detailLine(detailInfo.optString("year"), detailInfo.optString("area"), detailInfo.optString("typeName")), 15, STEXT_2);
+        meta.setPadding(0, dp(10), 0, 0); info.addView(meta);
+        meta.setVisibility(meta.getText().length() > 0 ? View.VISIBLE : View.GONE);
 
         PlaybackStore store = new PlaybackStore(this); JSONObject saved = store.find(detailSource, selected);
         int resumeIndex = saved != null && saved.optInt("index") >= 0 && saved.optInt("index") < episodes.length() ? saved.optInt("index") : 0;
@@ -1120,24 +1215,66 @@ public final class MainActivity extends Activity {
         }
 
         LinearLayout actions = row(); actions.setGravity(Gravity.CENTER_VERTICAL); info.addView(actions);
-        detailButton(actions, saved == null ? "▶   开始观看" : "▶   继续播放", true, () -> preparePlayback(resumeIndex));
+        Button primaryAction = detailButton(actions, saved == null ? "▶   开始观看" : "▶   继续播放", true, () -> preparePlayback(resumeIndex));
         boolean listed = store.contains(detailSource, selected);
         detailButton(actions, listed ? "移出片单" : "加入片单", false, () -> task("正在保存片单", () -> { if (listed) store.remove(PlaybackStore.identity(detailSource, selected)); else store.add(detailSource, selected, title); return true; }, ok -> showDetail()));
         detailButton(actions, "切换来源", false, this::showSourcePicker);
 
+        /* —— 剧情简介：放在 Hero 下方，保证长文本可读 —— */
+        LinearLayout synopsis = new LinearLayout(this); synopsis.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams synopsisParams = new LinearLayout.LayoutParams(-1, -2);
+        synopsisParams.setMargins(0, dp(30), 0, 0); content.addView(synopsis, synopsisParams);
+        sectionTitle(synopsis, "剧情简介", "");
+        String desc = detailInfo.optString("desc");
+        TextView description = starlightText("", 15, STEXT_2); description.setMaxLines(4);
+        description.setEllipsize(android.text.TextUtils.TruncateAt.END); description.setLineSpacing(dp(6), 1f);
+        description.setText(desc.isEmpty() ? "选好剧集，开始观看。" : Html.fromHtml(desc));
+        synopsis.addView(description);
+
+        final boolean[] expanded = {false};
+        TextView expand = starlightText(desc.length() > 90 ? "展开简介" : "", 13, SACCENT);
+        expand.setPadding(dp(2), dp(8), dp(2), dp(8));
+        expand.setFocusableInTouchMode(true); expand.setBackground(selectable(0x00000000, 999));
+        expand.setTextColor(new ColorStateList(new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}},
+                new int[]{SACCENT_HI, SACCENT}));
+        expand.setVisibility(View.GONE);
+        expand.setOnClickListener(v -> {
+            expanded[0] = !expanded[0];
+            description.setMaxLines(expanded[0] ? 14 : 4);
+            expand.setText(expanded[0] ? "收起简介" : "展开简介");
+            syncExpand(description, expand, expanded);
+        });
+        synopsis.addView(expand);
+        syncExpand(description, expand, expanded);
+
+        // 本地元数据回来后补全评分、类型、演职员与更完整的简介
+        if (catalog == null) catalog = new CatalogRepository(this);
+        final CatalogRepository metaRepo = catalog;
+        final String metaTitle = title;
+        final int metaTicket = generation;
+        final boolean backdropFallback = coverUrl.isEmpty();
+        relatedWorker.execute(() -> {
+            JSONObject payload = null;
+            try { payload = metaRepo.lookup(metaTitle); } catch (Exception ignored) { }
+            final JSONObject found = payload;
+            main.post(() -> {
+                if (found == null || found.optInt("id", 0) <= 0 || metaTicket != generation
+                        || screen != Screen.DETAIL || isFinishing() || isDestroyed()) return;
+                fillDetailMeta(found, chips, castLine, description, expand, expanded, poster, backdrop, backdropFallback);
+            });
+        });
+
         /* —— 选集 —— */
-        LinearLayout section = row(); section.setGravity(Gravity.BOTTOM);
-        section.setPadding(0, dp(28), 0, dp(10)); content.addView(section);
-        TextView sectionTitle = starlightText("选集", 26, STEXT_1);
-        sectionTitle.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
-        section.addView(sectionTitle, new LinearLayout.LayoutParams(0, -2, 1));
-        section.addView(starlightText("共 " + episodes.length() + " 集", 13, STEXT_3));
+        LinearLayout episodeSection = new LinearLayout(this); episodeSection.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams episodeParams = new LinearLayout.LayoutParams(-1, -2);
+        episodeParams.setMargins(0, dp(34), 0, 0); content.addView(episodeSection, episodeParams);
+        sectionTitle(episodeSection, "选集", episodes.length() > 1 ? "共 " + episodes.length() + " 集" : "正片");
         TextView skipInfo = starlightText(SegmentSkipStore.summary(this, title), 13, STEXT_3);
-        skipInfo.setPadding(0, 0, 0, dp(8)); content.addView(skipInfo);
+        skipInfo.setPadding(0, 0, 0, dp(8)); episodeSection.addView(skipInfo);
 
         int columns = getResources().getConfiguration().screenWidthDp >= 900 ? 8 : 6;
         GridLayout grid = new GridLayout(this); grid.setColumnCount(columns); content.addView(grid);
-        ArrayList<Button> buttons = new ArrayList<>();
+
         int gap = dp(8), available = getResources().getDisplayMetrics().widthPixels - dp(80);
         int width = Math.max(dp(88), (available - gap * (columns - 1)) / columns);
         for (int i = 0; i < episodes.length(); i++) {
@@ -1156,9 +1293,9 @@ public final class MainActivity extends Activity {
             episode.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(6) : 0));
             GridLayout.LayoutParams params = new GridLayout.LayoutParams(); params.width = width; params.height = dp(56);
             params.setMargins(i % columns == 0 ? 0 : gap, dp(4), 0, dp(4)); grid.addView(episode, params);
-            episode.setOnClickListener(v -> { if (!busy) preparePlayback(index); }); buttons.add(episode);
+            episode.setOnClickListener(v -> { if (!busy) preparePlayback(index); });
         }
-        if (!buttons.isEmpty()) buttons.get(Math.min(episodeIndex, buttons.size() - 1)).requestFocus();
+        primaryAction.requestFocus();
         renderRelated();
     }
     /** 同类推荐：由当前影片分类驱动，卡片直接进入对应详情。 */
@@ -1167,9 +1304,14 @@ public final class MainActivity extends Activity {
         if (matched.isEmpty()) matched = DiscoveryRepository.section(selected == null ? "" : selected.optString("typeName"));
         if (matched.isEmpty() || discovery == null) return;
         final String section = matched;
-        LinearLayout titleRow = row(); titleRow.setPadding(0, dp(30), 0, dp(12)); content.addView(titleRow);
+        LinearLayout titleRow = row(); titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(-1, -2);
+        headerParams.setMargins(0, dp(34), 0, dp(12)); content.addView(titleRow, headerParams);
+        View bar = new View(this); bar.setBackground(rounded(SACCENT, 2));
+        titleRow.addView(bar, new LinearLayout.LayoutParams(dp(4), dp(19)));
         TextView label = starlightText("同类推荐 · " + section, 23, STEXT_1);
         label.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        label.setPadding(dp(11), 0, 0, 0);
         titleRow.addView(label, new LinearLayout.LayoutParams(0, -2, 1));
         TextView status = starlightText("正在加载…", 13, STEXT_3); titleRow.addView(status);
         LinearLayout cards = row(); content.addView(cards);

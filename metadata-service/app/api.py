@@ -1,0 +1,450 @@
+from __future__ import annotations
+
+import logging
+import re
+
+from fastapi import APIRouter, Header, HTTPException, Query, Request
+
+from app import db
+from app.config import settings
+
+log = logging.getLogger(__name__)
+router = APIRouter()
+
+BASE_FILTER = (
+    "name <> '' AND pic_source IS NOT NULL "
+    "AND year IS NOT NULL AND year BETWEEN 1900 AND 2100 "
+    "AND type_id IS DISTINCT FROM 29"
+)
+MOVIE_BASE = "type_id_1 = 20"
+TV_BASE = "type_id_1 = 30"
+ALL_BASE = "type_id_1 IN (20, 30, 39, 45, 58)"
+
+ORDERING = {
+    "S": "score DESC NULLS LAST, score_num DESC NULLS LAST, hits DESC NULLS LAST, id DESC",
+    "R": "source_updated_at DESC NULLS LAST, id DESC",
+    "T": "source_updated_at DESC NULLS LAST, id DESC",
+    "U": "hits DESC NULLS LAST, source_updated_at DESC NULLS LAST, id DESC",
+}
+
+CARD_COLUMNS = """
+    id, name, year, area, type_name, genres, score, score_num, hits, remarks, pic_source
+"""
+
+
+def _base_url(request: Request) -> str:
+    return settings.public_base_url or str(request.base_url).rstrip("/")
+
+
+def _poster_url(request: Request, video_id: int) -> str:
+    return f"{_base_url(request)}/media/posters/{video_id}"
+
+
+LOOKUP_COLUMNS = """
+    id, name, sub_name, year, area, lang, type_name, genres, score, score_num,
+    remarks, actor, director, writer, blurb, episode_count, is_end, hits
+"""
+
+LOOKUP_SQL = f"""
+SELECT {LOOKUP_COLUMNS}
+FROM videos
+WHERE (name = $1 OR sub_name = $1)
+  AND ($2::int IS NULL OR year = $2)
+ORDER BY (name = $1) DESC, score_num DESC NULLS LAST, hits DESC NULLS LAST
+LIMIT 1
+"""
+
+LOOKUP_FUZZY_SQL = f"""
+SELECT {LOOKUP_COLUMNS}
+FROM videos
+WHERE (name ILIKE '%' || $1 || '%' OR sub_name ILIKE '%' || $1 || '%')
+ORDER BY (year = $2) DESC NULLS LAST, similarity(name, $1) DESC, score_num DESC NULLS LAST
+LIMIT 1
+"""
+
+# 片源标题常带「粤语 / 国语 / HD」等后缀，库里是干净片名，反向包含匹配兜底
+LOOKUP_CONTAINS_SQL = f"""
+SELECT {LOOKUP_COLUMNS}
+FROM videos
+WHERE length(name) >= 2 AND $1 ILIKE '%' || name || '%'
+ORDER BY length(name) DESC, score_num DESC NULLS LAST, hits DESC NULLS LAST
+LIMIT 1
+"""
+
+
+@router.get("/api/v1/lookup")
+async def lookup_video(
+    request: Request,
+    title: str = Query(..., min_length=1, max_length=120),
+    year: int | None = Query(None, ge=1900, le=2100),
+):
+    """按片名反查本地元数据，供 App 详情页补充简介、演职员、评分等信息。"""
+    pool = await db.get_pool()
+    keyword = title.strip()
+    row = await pool.fetchrow(LOOKUP_SQL, keyword, year)
+    if row is None:
+        row = await pool.fetchrow(LOOKUP_FUZZY_SQL, keyword, year)
+    if row is None:
+        row = await pool.fetchrow(LOOKUP_CONTAINS_SQL, keyword)
+    if row is None:
+        raise HTTPException(status_code=404, detail="video not found")
+    data = dict(row)
+    data["genres"] = list(data.get("genres") or [])
+    data["pic"] = _poster_url(request, row["id"])
+    return data
+
+
+def _parse_tags(tags: str | None) -> tuple[int | None, list[str]]:
+    year: int | None = None
+    labels: list[str] = []
+    for part in re.split(r"[,，]", tags or ""):
+        part = part.strip()
+        if not part:
+            continue
+        if year is None and re.fullmatch(r"(19|20)\d{2}", part):
+            year = int(part)
+        else:
+            labels.append(part)
+    return year, labels
+
+
+def _where(media_type: str | None, labels: list[str], year: int | None) -> tuple[str, list]:
+    clauses = [BASE_FILTER]
+    params: list = []
+    label = labels[0] if labels else None
+
+    if label == "综艺":
+        clauses.append("type_id_1 = 45")
+    elif label == "动画":
+        clauses.append("type_id_1 = 39")
+    elif label == "纪录片":
+        clauses.append("(type_id = 28 OR '纪录片' = ANY(genres))")
+    elif label == "短片":
+        clauses.append("type_id_1 = 58")
+    elif label:
+        params.append(label)
+        clauses.append(
+            f"(${len(params)} = ANY(genres) OR type_name ILIKE '%' || ${len(params)} || '%')"
+        )
+    elif media_type == "movie":
+        clauses.append(MOVIE_BASE)
+    elif media_type == "tv":
+        clauses.append(TV_BASE)
+    else:
+        clauses.append(ALL_BASE)
+
+    if year is not None:
+        params.append(year)
+        clauses.append(f"year = ${len(params)}")
+
+    return " AND ".join(clauses), params
+
+
+async def _query_catalog(
+    *,
+    media_type: str | None,
+    tags: str | None,
+    start: int,
+    count: int,
+    sort: str,
+    min_score: float = 0.0,
+) -> tuple[int, list]:
+    year, labels = _parse_tags(tags)
+    where, params = _where(media_type, labels, year)
+    if min_score > 0:
+        params.append(min_score)
+        where += f" AND score >= ${len(params)}"
+    order = ORDERING.get((sort or "U").upper(), ORDERING["U"])
+    start = max(0, start)
+    count = max(1, min(count, 100))
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", *params)
+        limit_index, offset_index = len(params) + 1, len(params) + 2
+        rows = await conn.fetch(
+            f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
+            f"ORDER BY {order} LIMIT ${limit_index} OFFSET ${offset_index}",
+            *params, count, start,
+        )
+    return int(total), rows
+
+
+def _compat_item(request: Request, row) -> dict:
+    score = float(row["score"]) if row["score"] is not None else 0.0
+    genres = list(row["genres"] or [])
+    poster = _poster_url(request, int(row["id"]))
+    subtitle = f"{row['year']} / {row['area'] or ''} / {' '.join(genres)}"
+    return {
+        "id": str(row["id"]),
+        "title": row["name"],
+        "pic": {"normal": poster, "large": poster},
+        "rating": {
+            "value": f"{score:.1f}" if score > 0 else "",
+            "count": int(row["score_num"] or 0),
+        },
+        "card_subtitle": subtitle,
+        "year": str(row["year"]),
+        "genres": genres,
+        "type_name": row["type_name"],
+        "remarks": row["remarks"] or "",
+        "source": "bfzy",
+    }
+
+
+@router.get("/health")
+async def health(request: Request):
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT count(*) FROM videos")
+        last_run = await conn.fetchrow(
+            "SELECT mode, status, started_at, finished_at, items_upserted, error "
+            "FROM sync_runs ORDER BY id DESC LIMIT 1"
+        )
+        state = await conn.fetchrow(
+            "SELECT full_page, page_count, incremental_cursor, "
+            "last_incremental_at, last_full_at FROM sync_state WHERE id = 1"
+        )
+    backfill = None
+    if state:
+        done = int(state["full_page"] or 0)
+        total_pages = int(state["page_count"] or 0)
+        backfill = {
+            "donePages": done,
+            "totalPages": total_pages or None,
+            "percent": round(done * 100.0 / total_pages, 2) if total_pages else None,
+            "finished": bool(total_pages and done >= total_pages),
+            "lastFullAt": state["last_full_at"],
+            "lastIncrementalAt": state["last_incremental_at"],
+        }
+    return {
+        "status": "ok",
+        "videos": int(total),
+        "sourceDomains": list(settings.source_domains),
+        "backfill": backfill,
+        "lastSync": dict(last_run) if last_run else None,
+        "baseUrl": _base_url(request),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 豆瓣 rexxar 兼容层：App 只需替换域名即可复用现有解析逻辑
+# ---------------------------------------------------------------------------
+
+
+@router.get("/rexxar/api/v2/{media_type}/recommend")
+async def douban_compatible(
+    media_type: str,
+    request: Request,
+    start: int = Query(0, ge=0),
+    count: int = Query(20, ge=1, le=100),
+    tags: str = "",
+    sort: str = "U",
+    min_score: float = Query(0, ge=0, le=10),
+):
+    if media_type not in {"movie", "tv"}:
+        raise HTTPException(status_code=404, detail="unknown media type")
+    total, rows = await _query_catalog(
+        media_type=media_type, tags=tags, start=start, count=count, sort=sort,
+        min_score=min_score,
+    )
+    items = [_compat_item(request, row) for row in rows]
+    return {
+        "total": total,
+        "start": start,
+        "count": len(items),
+        "items": items,
+        "source": "bfzy",
+    }
+
+
+@router.get("/api/v2/{media_type}/recommend", include_in_schema=False)
+async def douban_compatible_alias(
+    media_type: str,
+    request: Request,
+    start: int = Query(0, ge=0),
+    count: int = Query(20, ge=1, le=100),
+    tags: str = "",
+    sort: str = "U",
+):
+    return await douban_compatible(media_type, request, start, count, tags, sort)
+
+
+# ---------------------------------------------------------------------------
+# 原生接口
+# ---------------------------------------------------------------------------
+
+
+CATEGORY_MAP = {
+    "全部": (None, []),
+    "电影": ("movie", []),
+    "电视剧": ("tv", []),
+    "综艺": ("tv", ["综艺"]),
+    "动漫": ("tv", ["动画"]),
+    "纪录片": ("tv", ["纪录片"]),
+    "短剧": ("movie", ["短片"]),
+}
+
+
+@router.get("/api/v1/videos")
+async def list_videos(
+    request: Request,
+    category: str = Query("全部"),
+    year: str = Query("全部"),
+    sort: str = Query("time", pattern="^(time|score|hot)$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(28, ge=1, le=100),
+):
+    if category not in CATEGORY_MAP:
+        raise HTTPException(status_code=400, detail="unknown category")
+    media_type, labels = CATEGORY_MAP[category]
+    year_value = int(year) if re.fullmatch(r"(19|20)\d{2}", year) else None
+    where, params = _where(media_type, labels, year_value)
+    order = {
+        "time": ORDERING["R"],
+        "score": ORDERING["S"],
+        "hot": "hits DESC NULLS LAST, source_updated_at DESC NULLS LAST",
+    }[sort]
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", *params)
+        rows = await conn.fetch(
+            f"SELECT id, name, sub_name, year, area, lang, type_name, genres, score, "
+            f"score_num, remarks, actor, director, hits, is_end, episode_count, "
+            f"source_updated_at, pic_source FROM videos WHERE {where} "
+            f"ORDER BY {order} LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+            *params, page_size, (page - 1) * page_size,
+        )
+
+    items = []
+    for row in rows:
+        item = _compat_item(request, row)
+        item.update({
+            "sub_name": row["sub_name"],
+            "lang": row["lang"],
+            "actor": row["actor"],
+            "director": row["director"],
+            "hits": row["hits"],
+            "is_end": row["is_end"],
+            "episode_count": row["episode_count"],
+            "updated_at": row["source_updated_at"],
+        })
+        items.append(item)
+
+    return {
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
+        "pages": max(1, (int(total) + page_size - 1) // page_size),
+        "items": items,
+    }
+
+
+@router.get("/api/v1/videos/{video_id}")
+async def video_detail(video_id: int):
+    pool = await db.get_pool()
+    row = await pool.fetchrow("SELECT * FROM videos WHERE id = $1", video_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="video not found")
+    payload = dict(row)
+    payload["id"] = str(payload["id"])
+    if payload.get("douban_id") is not None:
+        payload["douban_id"] = str(payload["douban_id"])
+    return payload
+
+
+@router.get("/api/v1/rankings")
+async def rankings(
+    request: Request,
+    category: str = Query("电影"),
+    limit: int = Query(20, ge=1, le=100),
+):
+    if category not in CATEGORY_MAP:
+        raise HTTPException(status_code=400, detail="unknown category")
+    media_type, labels = CATEGORY_MAP[category]
+    where, params = _where(media_type, labels, None)
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
+            f"ORDER BY {ORDERING['S']} LIMIT ${len(params) + 1}",
+            *params, limit,
+        )
+    return {"items": [_compat_item(request, row) for row in rows]}
+
+
+@router.get("/api/v1/search")
+async def search(
+    request: Request,
+    q: str = Query(..., min_length=1, max_length=80),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(28, ge=1, le=100),
+):
+    pattern = f"%{q.strip()}%"
+    where = f"{BASE_FILTER} AND (name ILIKE $1 OR sub_name ILIKE $1)"
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval(f"SELECT count(*) FROM videos WHERE {where}", pattern)
+        rows = await conn.fetch(
+            f"SELECT {CARD_COLUMNS} FROM videos WHERE {where} "
+            f"ORDER BY {ORDERING['S']} LIMIT $2 OFFSET $3",
+            pattern, page_size, (page - 1) * page_size,
+        )
+    return {
+        "total": int(total),
+        "page": page,
+        "page_size": page_size,
+        "items": [_compat_item(request, row) for row in rows],
+    }
+
+
+# ---------------------------------------------------------------------------
+# 运维接口
+# ---------------------------------------------------------------------------
+
+
+def _require_admin(token: str | None) -> None:
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=401, detail="invalid admin token")
+
+
+@router.get("/admin/status")
+async def admin_status(request: Request, x_admin_token: str | None = Header(default=None)):
+    _require_admin(x_admin_token)
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        total = await conn.fetchval("SELECT count(*) FROM videos")
+        with_poster = await conn.fetchval("SELECT count(*) FROM videos WHERE pic_source IS NOT NULL")
+        local_poster = await conn.fetchval("SELECT count(*) FROM videos WHERE poster_path IS NOT NULL")
+        state = await conn.fetchrow("SELECT * FROM sync_state WHERE id = 1")
+        runs = await conn.fetch(
+            "SELECT id, mode, status, started_at, finished_at, pages_done, "
+            "items_upserted, items_failed, error FROM sync_runs ORDER BY id DESC LIMIT 10"
+        )
+    return {
+        "videos": int(total),
+        "withPoster": int(with_poster),
+        "cachedPoster": int(local_poster),
+        "state": dict(state) if state else None,
+        "runs": [dict(run) for run in runs],
+        "sourceDomains": list(settings.source_domains),
+        "baseUrl": _base_url(request),
+    }
+
+
+@router.post("/admin/sync")
+async def admin_sync(
+    mode: str = Query("incremental", pattern="^(incremental|full|refresh)$"),
+    pages: int | None = Query(None, ge=1),
+    x_admin_token: str | None = Header(default=None),
+):
+    _require_admin(x_admin_token)
+    pool = await db.get_pool()
+    await pool.execute(
+        "UPDATE sync_settings SET requested_mode = $1, requested_at = now(), "
+        "updated_at = now() WHERE id = 1",
+        mode,
+    )
+    return {"status": "queued", "mode": mode}

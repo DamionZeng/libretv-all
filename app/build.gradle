@@ -21,6 +21,9 @@ android {
         if (familyUpgrade) versionName '0.21.0-independent'
         buildConfigField 'String', 'DEFAULT_NAS_URL', '""'
         buildConfigField 'String', 'DEFAULT_NAS_PASSWORD', '""'
+        // 采集服务地址，打包时可用 -PcatalogBase=http://host:8080 覆盖
+        buildConfigField 'String', 'CATALOG_BASE_URL',
+                '"' + providers.gradleProperty('catalogBase').orElse('http://192.168.10.69:8080').get() + '"'
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     compileOptions {

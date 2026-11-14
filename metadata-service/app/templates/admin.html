@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>元数据采集控制台</title>
+<style>
+  :root {
+    --bg: #0b0c0e;
+    --panel: #14161a;
+    --panel-2: #191c21;
+    --line: #24282f;
+    --text: #f2f4f7;
+    --text-2: #a3aab4;
+    --text-3: #6b727c;
+    --accent: #e8a33d;
+    --accent-soft: rgba(232, 163, 61, .14);
+    --green: #45c486;
+    --green-soft: rgba(69, 196, 134, .14);
+    --red: #e5645f;
+    --red-soft: rgba(229, 100, 95, .14);
+    --blue: #6aa8f0;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+          "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 0 28px 64px; }
+
+  /* ---------- 顶栏 ---------- */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: blur(14px);
+    background: rgba(11, 12, 14, .82);
+    border-bottom: 1px solid var(--line);
+  }
+  .bar {
+    max-width: 1320px; margin: 0 auto; padding: 16px 28px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark {
+    width: 38px; height: 38px; border-radius: 11px; display: grid; place-items: center;
+    background: linear-gradient(145deg, #f0b45a, #c97f1d);
+    box-shadow: 0 6px 18px rgba(232, 163, 61, .25);
+  }
+  .mark svg { width: 20px; height: 20px; }
+  .brand h1 { margin: 0; font-size: 16px; letter-spacing: .3px; font-weight: 600; }
+  .brand p { margin: 0; color: var(--text-3); font-size: 12px; }
+  .bar-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 7px 14px; border-radius: 999px; font-size: 12.5px;
+    background: var(--panel); border: 1px solid var(--line); color: var(--text-2);
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); }
+  .dot.busy { background: var(--accent); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+
+  /* ---------- 卡片 ---------- */
+  section { margin-top: 26px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 14px; }
+  .sec-head h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .4px; }
+  .sec-head span { color: var(--text-3); font-size: 12px; }
+  .card {
+    background: linear-gradient(180deg, var(--panel), #101216);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 20px;
+  }
+  .grid { display: grid; gap: 14px; }
+  .stats { grid-template-columns: repeat(6, 1fr); }
+  .two-col { grid-template-columns: 1.25fr 1fr; }
+  .three-col { grid-template-columns: 1fr 1fr 1fr; }
+  @media (max-width: 1100px) {
+    .stats { grid-template-columns: repeat(3, 1fr); }
+    .two-col, .three-col { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 640px) {
+    .wrap { padding: 0 16px 48px; }
+    .bar { padding: 14px 16px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .bar-right .pill:first-child { display: none; }
+  }
+
+  .stat { padding: 18px 18px 16px; }
+  .stat .label { color: var(--text-3); font-size: 12px; letter-spacing: .3px; }
+  .stat .value { font-size: 27px; font-weight: 650; margin-top: 6px; letter-spacing: -.5px; }
+  .stat .sub { color: var(--text-3); font-size: 12px; margin-top: 2px; }
+  .stat .value small { font-size: 13px; color: var(--text-3); font-weight: 500; margin-left: 4px; }
+
+  /* ---------- 进度 ---------- */
+  .progress-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .progress-head strong { font-size: 22px; letter-spacing: -.4px; }
+  .progress-head span { color: var(--text-3); font-size: 12.5px; }
+  .track {
+    height: 10px; border-radius: 999px; background: #1d2026; overflow: hidden; margin: 14px 0 10px;
+  }
+  .fill {
+    height: 100%; width: 0; border-radius: 999px;
+    background: linear-gradient(90deg, #d78f2c, #f5c46b);
+    transition: width .6s ease;
+  }
+  .meta-row { display: flex; flex-wrap: wrap; gap: 18px; color: var(--text-3); font-size: 12.5px; }
+  .meta-row b { color: var(--text-2); font-weight: 500; }
+
+  /* ---------- 控件 ---------- */
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+  .row + .row { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .row label { color: var(--text-2); font-size: 13px; }
+  .hint { color: var(--text-3); font-size: 12px; margin-top: 2px; }
+
+  .switch { position: relative; width: 46px; height: 26px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .slider {
+    position: absolute; inset: 0; cursor: pointer; border-radius: 999px;
+    background: #2a2e35; transition: .2s; border: 1px solid var(--line);
+  }
+  .slider:before {
+    content: ""; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px;
+    border-radius: 50%; background: #8b929c; transition: .2s;
+  }
+  .switch input:checked + .slider { background: var(--accent-soft); border-color: rgba(232,163,61,.5); }
+  .switch input:checked + .slider:before { transform: translateX(20px); background: var(--accent); }
+
+  select, input[type="text"], input[type="number"] {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 10px; padding: 9px 12px; font-size: 13px; outline: none;
+    font-family: inherit; transition: border-color .15s;
+  }
+  select:focus, input:focus { border-color: rgba(232,163,61,.55); }
+  input::placeholder { color: var(--text-3); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; cursor: pointer;
+    border-radius: 10px; padding: 9px 16px; font-size: 13px; font-weight: 500;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--text);
+    transition: .15s; font-family: inherit;
+  }
+  .btn:hover:not(:disabled) { border-color: #3a4048; background: #1e2229; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.primary {
+    background: linear-gradient(145deg, #f0b45a, #d18a28);
+    border-color: transparent; color: #201504; font-weight: 600;
+  }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.06); }
+  .btn.ghost { background: transparent; }
+  .btn.tiny { padding: 3px 11px; font-size: 12px; border-radius: 8px; color: var(--text-2); }
+  .btn.tiny:hover:not(:disabled) { color: var(--text); }
+  .btns { display: flex; flex-wrap: wrap; gap: 10px; }
+
+  /* ---------- 分布条 ---------- */
+  .bars { display: grid; gap: 12px; margin-top: 4px; }
+  .bar-item .top { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 6px; }
+  .bar-item .top span:last-child { color: var(--text-3); }
+  .bar-track { height: 7px; background: #1d2026; border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #5f8fd0, #8fbcf5); }
+  .bar-item:nth-child(2n) .bar-fill { background: linear-gradient(90deg, #c98b3c, #efc078); }
+  .bar-item:nth-child(3n) .bar-fill { background: linear-gradient(90deg, #4c9d7c, #7fd0ab); }
+
+  /* ---------- 表格 ---------- */
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-weight: 500; color: var(--text-3); font-size: 12px;
+    padding: 10px 12px; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  td { padding: 11px 12px; border-bottom: 1px solid #1b1e23; color: var(--text-2); vertical-align: middle; }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: rgba(255,255,255,.018); }
+  .num { font-variant-numeric: tabular-nums; }
+  td.name { color: var(--text); max-width: 320px; }
+  .badge {
+    display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11.5px;
+    border: 1px solid transparent;
+  }
+  .badge.success { color: var(--green); background: var(--green-soft); }
+  .badge.running { color: var(--accent); background: var(--accent-soft); }
+  .badge.failed { color: var(--red); background: var(--red-soft); }
+  .badge.partial, .badge.interrupted, .badge.skipped { color: var(--text-2); background: #23272e; }
+
+  .thumb {
+    width: 38px; height: 54px; border-radius: 7px; object-fit: cover;
+    background: #22262c; display: block;
+  }
+  .thumb.empty { display: grid; place-items: center; color: var(--text-3); font-size: 10px; }
+
+  .pager { display: flex; align-items: center; justify-content: space-between; margin-top: 14px; gap: 12px; }
+  .pager .info { color: var(--text-3); font-size: 12.5px; }
+
+  .empty-state { text-align: center; color: var(--text-3); padding: 28px 0; font-size: 13px; }
+
+  /* ---------- 日志弹窗 ---------- */
+  .modal { position: fixed; inset: 0; z-index: 100; display: none; }
+  .modal.show { display: block; }
+  .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.66); backdrop-filter: blur(5px); }
+  .modal-card {
+    position: relative; margin: 4vh auto; width: min(1100px, 94vw); max-height: 88vh;
+    display: flex; flex-direction: column; overflow: hidden;
+    background: #101216; border: 1px solid #2b3038; border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.6); animation: modalIn .18s ease;
+  }
+  @keyframes modalIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  .modal-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 14px;
+    padding: 15px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap;
+  }
+  .modal-head h3 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+  .modal-head p { margin: 3px 0 0; font-size: 11.5px; color: var(--text-3); }
+  .modal-tools { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
+  .modal-tools select, .modal-tools input { padding: 7px 10px; font-size: 12.5px; }
+  .modal-tools input { width: 180px; }
+  .switch.small { width: 38px; height: 22px; }
+  .switch.small .slider:before { width: 14px; height: 14px; left: 3px; top: 3px; }
+  .switch.small input:checked + .slider:before { transform: translateX(16px); }
+  .auto-label { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-2); }
+  .log-view {
+    flex: 1; min-height: 320px; overflow: auto; background: #0a0b0d; padding: 10px 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12.3px; line-height: 1.72; scrollbar-width: thin;
+  }
+  .log-view::-webkit-scrollbar { width: 10px; height: 10px; }
+  .log-view::-webkit-scrollbar-thumb { background: #2c313a; border-radius: 8px; }
+  .log-line {
+    white-space: pre-wrap; word-break: break-word; color: #b7bec7;
+    padding: 1px 8px; border-left: 2px solid transparent; border-radius: 3px;
+  }
+  .log-line:hover { background: rgba(255,255,255,.03); }
+  .log-line.lv-warn { color: #f0cf9c; border-left-color: rgba(232,163,61,.7); background: rgba(232,163,61,.05); }
+  .log-line.lv-error { color: #ffb4b1; border-left-color: rgba(229,100,95,.85); background: rgba(229,100,95,.07); }
+  .log-line.lv-debug { color: #79818c; }
+  .modal-foot {
+    display: flex; justify-content: space-between; gap: 12px; padding: 10px 20px;
+    border-top: 1px solid var(--line); color: var(--text-3); font-size: 11.5px;
+  }
+  @media (max-width: 720px) {
+    .modal-card { margin: 2vh auto; max-height: 94vh; }
+    .modal-tools input { width: 120px; }
+    .log-view { min-height: 240px; }
+  }
+
+  /* ---------- Toast ---------- */
+  #toast {
+    position: fixed; left: 50%; bottom: 30px; transform: translate(-50%, 20px);
+    background: #1e2229; border: 1px solid #333941; color: var(--text);
+    padding: 11px 20px; border-radius: 11px; font-size: 13px; opacity: 0;
+    pointer-events: none; transition: .22s; z-index: 80; box-shadow: 0 10px 30px rgba(0,0,0,.4);
+  }
+  #toast.show { opacity: 1; transform: translate(-50%, 0); }
+  #toast.err { border-color: rgba(229,100,95,.5); color: #ffb9b6; }
+
+  #tokenbar { display: none; }
+  #tokenbar.show { display: flex; }
+  .foot { color: var(--text-3); font-size: 12px; text-align: center; margin-top: 40px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <div class="brand">
+      <div class="mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#241703" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="4" width="20" height="16" rx="3" />
+          <path d="M10 9l5 3-5 3z" fill="#241703" stroke="none" />
+        </svg>
+      </div>
+      <div>
+        <h1>元数据采集控制台</h1>
+        <p>LibreTV · 暴风资源采集与分发</p>
+      </div>
+    </div>
+    <div class="bar-right">
+      <div class="pill"><span class="dot" id="statusDot"></span><span id="statusText">连接中</span></div>
+      <div class="pill">
+        <span class="mono" id="serverTime">--:--:--</span>
+      </div>
+      <button class="btn ghost" id="tokenBtn" title="设置管理令牌">令牌</button>
+    </div>
+  </div>
+  <div class="bar">
+    <div id="tokenbar" style="width:100%; display:flex; gap:10px; align-items:center;">
+      <input type="text" id="tokenInput" placeholder="输入 ADMIN_TOKEN 后回车保存（未配置可留空）" style="flex:1" />
+      <button class="btn" id="tokenSave">保存</button>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- 概览 -->
+  <section>
+    <div class="sec-head">
+      <h2>数据概览</h2>
+      <span>来自 PostgreSQL · 每 5 秒自动刷新</span>
+    </div>
+    <div class="grid stats">
+      <div class="card stat">
+        <div class="label">总条目</div>
+        <div class="value" id="sTotal">-</div>
+        <div class="sub" id="sTotalSub">已入库影片</div>
+      </div>
+      <div class="card stat">
+        <div class="label">有海报</div>
+        <div class="value" id="sPoster">-</div>
+        <div class="sub" id="sPosterSub">占比 -</div>
+      </div>
+      <div class="card stat">
+        <div class="label">今日新增</div>
+        <div class="value" id="sAdded">-</div>
+        <div class="sub">最近 24 小时首次入库</div>
+      </div>
+      <div class="card stat">
+        <div class="label">今日更新</div>
+        <div class="value" id="sUpdated">-</div>
+        <div class="sub">最近 24 小时源站变更</div>
+      </div>
+      <div class="card stat">
+        <div class="label">海报缓存</div>
+        <div class="value" id="sCached">-</div>
+        <div class="sub">按需落盘到本机</div>
+      </div>
+      <div class="card stat">
+        <div class="label">采集页数</div>
+        <div class="value" id="sPages">-</div>
+        <div class="sub" id="sPagesSub">源站共 - 页</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 采集进度 + 调度 -->
+  <section>
+    <div class="grid two-col">
+      <div class="card">
+        <div class="sec-head" style="margin-bottom:10px"><h2>全量回填进度</h2></div>
+        <div class="progress-head">
+          <strong id="pctText">0%</strong>
+          <span id="pageText">0 / 0 页</span>
+        </div>
+        <div class="track"><div class="fill" id="progressFill"></div></div>
+        <div class="meta-row">
+          <div>当前域名 <b id="domainText">-</b></div>
+          <div>增量游标 <b id="cursorText">-</b></div>
+          <div>上次全量 <b id="lastFullText">-</b></div>
+        </div>
+        <div class="row" style="margin-top:18px">
+          <div>
+            <label>手动执行采集</label>
+            <div class="hint" id="runHint">排队后由后台调度器单线程执行</div>
+          </div>
+          <div class="btns">
+            <button class="btn primary" data-mode="incremental">立即增量</button>
+            <button class="btn" data-mode="full">续采全量</button>
+            <button class="btn" data-mode="refresh">全量校对</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="sec-head" style="margin-bottom:10px"><h2>定时采集</h2></div>
+        <div class="row">
+          <div>
+            <label>启用定时任务</label>
+            <div class="hint">关闭后仍可手动触发，后台进程不会退出</div>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="schedToggle" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="row">
+          <div>
+            <label>采集频率</label>
+            <div class="hint">全量未完成时会持续回填，不受此间隔限制</div>
+          </div>
+          <select id="intervalSelect">
+            <option value="60">每小时</option>
+            <option value="360">每 6 小时</option>
+            <option value="720">每 12 小时</option>
+            <option value="1440">每天一次</option>
+            <option value="2880">每 2 天</option>
+            <option value="10080">每周一次</option>
+            <option value="custom">自定义…</option>
+          </select>
+        </div>
+        <div class="row" id="customRow" style="display:none">
+          <div><label>自定义间隔</label><div class="hint">单位分钟，5 ~ 10080</div></div>
+          <div style="display:flex; gap:8px; align-items:center">
+            <input type="number" id="customMinutes" min="5" max="10080" style="width:110px" />
+            <button class="btn" id="customSave">保存</button>
+          </div>
+        </div>
+        <div class="row">
+          <div><label>下次执行</label></div>
+          <div class="mono" id="nextRunText">-</div>
+        </div>
+        <div class="row">
+          <div><label>当前状态</label></div>
+          <div id="schedStateText" style="color:var(--text-2); font-size:13px">-</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 分布 + 记录 -->
+  <section>
+    <div class="grid two-col">
+      <div class="card">
+        <div class="sec-head" style="margin-bottom:14px"><h2>分类分布</h2><span>按一级分类统计</span></div>
+        <div class="bars" id="bucketBars"><div class="empty-state">加载中…</div></div>
+      </div>
+      <div class="card">
+        <div class="sec-head" style="margin-bottom:14px"><h2>最近采集记录</h2><span>最新 12 条</span></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr><th>#</th><th>模式</th><th>状态</th><th>开始时间</th><th class="num">页数</th><th class="num">新增</th><th class="num">更新</th><th></th></tr>
+            </thead>
+            <tbody id="runsBody"><tr><td colspan="8" class="empty-state">加载中…</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 数据浏览 -->
+  <section>
+    <div class="sec-head">
+      <h2>数据浏览</h2>
+      <span>直接查看入库结果，便于核对采集质量</span>
+    </div>
+    <div class="card">
+      <div class="row" style="gap:12px; flex-wrap:wrap; justify-content:flex-start">
+        <input type="text" id="searchInput" placeholder="按片名搜索…" style="flex:1; min-width:220px" />
+        <select id="categorySelect">
+          <option value="all">全部分类</option>
+          <option value="20">电影</option>
+          <option value="30">电视剧</option>
+          <option value="45">综艺</option>
+          <option value="39">动漫</option>
+          <option value="58">短剧</option>
+        </select>
+        <button class="btn primary" id="searchBtn">查询</button>
+      </div>
+      <div class="table-wrap" style="margin-top:16px">
+        <table>
+          <thead>
+            <tr>
+              <th style="width:56px">海报</th><th>片名</th><th>分类</th>
+              <th>年份 / 地区</th><th class="num">评分</th><th class="num">热度</th><th>源更新时间</th>
+            </tr>
+          </thead>
+          <tbody id="videosBody"><tr><td colspan="7" class="empty-state">加载中…</td></tr></tbody>
+        </table>
+      </div>
+      <div class="pager">
+        <div class="info" id="videoPageInfo">共 0 条</div>
+        <div class="btns">
+          <button class="btn" id="prevPage">上一页</button>
+          <button class="btn" id="nextPage">下一页</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="foot">LibreTV Metadata Service · 采集源 <span id="domainsText" class="mono">-</span></div>
+</div>
+
+<div id="logModal" class="modal" aria-hidden="true">
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-label="采集服务日志">
+    <div class="modal-head">
+      <div>
+        <h3 id="logTitle">采集日志</h3>
+        <p class="mono" id="logFile">-</p>
+      </div>
+      <div class="modal-tools">
+        <select id="logLevel">
+          <option value="all">全部级别</option>
+          <option value="info">INFO</option>
+          <option value="warning">WARNING</option>
+          <option value="error">ERROR</option>
+        </select>
+        <input type="text" id="logSearch" placeholder="搜索关键字，如 page / bfzy" />
+        <label class="auto-label">
+          <span>自动刷新</span>
+          <span class="switch small">
+            <input type="checkbox" id="logAuto" checked />
+            <span class="slider"></span>
+          </span>
+        </label>
+        <button class="btn" id="logRefresh">刷新</button>
+        <button class="btn ghost" id="logClose">关闭</button>
+      </div>
+    </div>
+    <div class="log-view" id="logView"><div class="empty-state">加载中…</div></div>
+    <div class="modal-foot">
+      <span id="logMeta">-</span>
+      <span>Esc 关闭 · 日志保留 30 天</span>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const state = { page: 1, pages: 1, mode: "all", busy: false, interval: 1440 };
+  let token = localStorage.getItem("libretv_admin_token") || "";
+
+  function headers(extra) {
+    const h = Object.assign({ "Content-Type": "application/json" }, extra || {});
+    if (token) h["X-Admin-Token"] = token;
+    return h;
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, Object.assign({ headers: headers() }, options || {}));
+    if (res.status === 401) {
+      $("tokenbar").classList.add("show");
+      throw new Error("需要管理令牌");
+    }
+    if (!res.ok) {
+      let detail = await res.text();
+      try { detail = JSON.parse(detail).detail || detail; } catch (e) {}
+      throw new Error(detail || ("HTTP " + res.status));
+    }
+    return res.json();
+  }
+
+  let toastTimer;
+  function toast(message, isError) {
+    const el = $("toast");
+    el.textContent = message;
+    el.className = "show" + (isError ? " err" : "");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.className = ""; }, 2600);
+  }
+
+  const num = (v) => (v === null || v === undefined ? "-" : Number(v).toLocaleString("zh-CN"));
+  const pct = (v) => Number(v || 0).toFixed(1) + "%";
+
+  function time(value) {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (isNaN(d)) return "-";
+    return d.toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function shortTime(value) {
+    if (!value) return "-";
+    const d = new Date(value);
+    if (isNaN(d)) return "-";
+    return d.toLocaleString("zh-CN", { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+  }
+
+  function duration(start, end) {
+    if (!start || !end) return "-";
+    const sec = Math.max(0, (new Date(end) - new Date(start)) / 1000);
+    if (sec < 60) return Math.round(sec) + " 秒";
+    if (sec < 3600) return Math.round(sec / 60) + " 分钟";
+    return (sec / 3600).toFixed(1) + " 小时";
+  }
+
+  function modeLabel(mode) {
+    return mode === "full" ? "全量" : mode === "refresh" ? "校对" : "增量";
+  }
+
+  function badge(status) {
+    const cls = ["success", "running", "failed", "partial", "interrupted", "skipped"].includes(status) ? status : "";
+    const label = {
+      success: "成功", running: "执行中", failed: "失败", partial: "部分完成",
+      interrupted: "已中断", skipped: "已跳过"
+    }[status] || status || "-";
+    return '<span class="badge ' + cls + '">' + label + "</span>";
+  }
+
+  function esc(value) {
+    return String(value === null || value === undefined ? "" : value)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function renderOverview(data) {
+    const d = data.data;
+    $("sTotal").textContent = num(d.videos);
+    $("sPoster").textContent = num(d.withPoster);
+    $("sPosterSub").textContent = "占比 " + (d.videos ? pct(d.withPoster / d.videos * 100) : "-");
+    $("sAdded").textContent = num(d.added24h);
+    $("sUpdated").textContent = num(d.updated24h);
+    $("sCached").textContent = num(d.cachedPosters);
+    $("sPages").textContent = num(data.backfill.donePages);
+    $("sPagesSub").textContent = "源站共 " + (data.backfill.totalPages || 0) + " 页";
+
+    const b = data.backfill;
+    $("pctText").textContent = b.percent + "%";
+    $("pageText").textContent = b.donePages + " / " + (b.totalPages || 0) + " 页";
+    $("progressFill").style.width = Math.min(100, b.percent) + "%";
+
+    const st = data.state || {};
+    $("domainText").textContent = st.active_domain || "-";
+    $("cursorText").textContent = st.incremental_cursor ? shortTime(st.incremental_cursor) : "-";
+    $("lastFullText").textContent = shortTime(st.last_full_at);
+
+    const running = data.running;
+    const busy = !!running;
+    state.busy = busy;
+    const dot = $("statusDot");
+    dot.className = "dot" + (busy ? " busy" : "");
+    $("statusText").textContent = busy ? ("采集中 · " + (running.mode === "full" ? "全量" : "增量")) : "服务就绪";
+    $("runHint").textContent = busy
+      ? "当前任务执行中（第 " + (running.last_page || 0) + " 页），手动请求会排队"
+      : "排队后由后台调度器单线程执行";
+    document.querySelectorAll("[data-mode]").forEach((btn) => {
+      btn.disabled = false;
+    });
+
+    // 调度
+    const sc = data.scheduler;
+    state.interval = sc.intervalMinutes;
+    $("schedToggle").checked = sc.enabled;
+    const select = $("intervalSelect");
+    const preset = [60, 360, 720, 1440, 2880, 10080];
+    if (preset.includes(sc.intervalMinutes)) {
+      select.value = String(sc.intervalMinutes);
+      $("customRow").style.display = "none";
+    } else {
+      select.value = "custom";
+      $("customRow").style.display = "flex";
+      $("customMinutes").value = sc.intervalMinutes;
+    }
+    $("nextRunText").textContent = sc.nextRunAt === "回填中" || sc.nextRunAt === "即将执行"
+      ? sc.nextRunAt : (sc.enabled ? time(sc.nextRunAt) : "已关闭");
+    $("schedStateText").textContent = sc.enabled
+      ? "定时任务运行中 · 每 " + sc.intervalMinutes + " 分钟"
+      : "定时任务已暂停";
+
+    // 分布
+    const total = d.videos || 1;
+    $("bucketBars").innerHTML = (data.buckets || []).slice(0, 8).map((item) => {
+      const width = Math.max(2, item.count / total * 100);
+      return '<div class="bar-item">' +
+        '<div class="top"><span>' + esc(item.name) + '</span><span class="num">' + num(item.count) + '</span></div>' +
+        '<div class="bar-track"><div class="bar-fill" style="width:' + width.toFixed(2) + '%"></div></div>' +
+        '</div>';
+    }).join("") || '<div class="empty-state">暂无数据</div>';
+
+    // 记录
+    const rows = data.runs || [];
+    $("runsBody").innerHTML = rows.length ? rows.map((r) =>
+      "<tr>" +
+        '<td class="num">' + r.id + "</td>" +
+        "<td>" + modeLabel(r.mode) + "</td>" +
+        "<td>" + badge(r.status) + "</td>" +
+        '<td class="num">' + shortTime(r.started_at) + "</td>" +
+        '<td class="num">' + num(r.pages_done) + "</td>" +
+        '<td class="num">' + num(r.items_inserted) + "</td>" +
+        '<td class="num">' + num(r.items_updated) + "</td>" +
+        '<td><button class="btn tiny" data-run="' + r.id + '">日志</button></td>' +
+      "</tr>"
+    ).join("") : '<tr><td colspan="8" class="empty-state">暂无记录</td></tr>';
+
+    $("domainsText").textContent = (data.sourceDomains || []).join("  ·  ");
+  }
+
+  async function refreshOverview() {
+    try {
+      const data = await api("/admin/api/overview");
+      renderOverview(data);
+      const now = new Date();
+      $("serverTime").textContent = now.toLocaleTimeString("zh-CN", { hour12: false });
+    } catch (err) {
+      $("statusText").textContent = "连接失败";
+      $("statusDot").className = "dot";
+      $("statusDot").style.background = "var(--red)";
+      if (err.message) toast(err.message, true);
+    }
+  }
+
+  async function loadVideos() {
+    try {
+      const params = new URLSearchParams({
+        q: $("searchInput").value.trim(),
+        category: $("categorySelect").value,
+        page: String(state.page),
+        page_size: "20"
+      });
+      const data = await api("/admin/api/videos?" + params.toString());
+      state.pages = data.pages;
+      $("videoPageInfo").textContent = "共 " + num(data.total) + " 条 · 第 " + data.page + " / " + data.pages + " 页";
+      $("prevPage").disabled = data.page <= 1;
+      $("nextPage").disabled = data.page >= data.pages;
+      $("videosBody").innerHTML = data.items.length ? data.items.map((v) => {
+        const thumb = v.poster
+          ? '<img class="thumb" loading="lazy" src="' + esc(v.poster) + '" onerror="this.style.display=\'none\'" />'
+          : '<div class="thumb empty">无图</div>';
+        return "<tr>" +
+          "<td>" + thumb + "</td>" +
+          '<td class="name">' + esc(v.name) + "</td>" +
+          "<td>" + esc(v.type_name || "-") + "</td>" +
+          "<td>" + esc((v.year || "-") + " / " + (v.area || "-")) + "</td>" +
+          '<td class="num">' + (v.score === null ? "-" : Number(v.score).toFixed(1)) + "</td>" +
+          '<td class="num">' + num(v.hits) + "</td>" +
+          '<td class="num">' + shortTime(v.source_updated_at) + "</td>" +
+        "</tr>";
+      }).join("") : '<tr><td colspan="7" class="empty-state">没有匹配的数据</td></tr>';
+    } catch (err) {
+      $("videosBody").innerHTML = '<tr><td colspan="7" class="empty-state">' + esc(err.message) + "</td></tr>";
+    }
+  }
+
+  // ---- 交互 ----
+  document.querySelectorAll("[data-mode]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const mode = btn.getAttribute("data-mode");
+      btn.disabled = true;
+      try {
+        await api("/admin/api/sync", { method: "POST", body: JSON.stringify({ mode }) });
+        toast("已提交" + (mode === "incremental" ? "增量" : mode === "full" ? "全量续采" : "全量校对") + "任务，正在排队");
+        refreshOverview();
+      } catch (err) {
+        toast(err.message, true);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  $("schedToggle").addEventListener("change", async (e) => {
+    const enabled = e.target.checked;
+    try {
+      await api("/admin/api/scheduler", {
+        method: "POST",
+        body: JSON.stringify({ enabled: enabled, interval_minutes: state.interval })
+      });
+      toast(enabled ? "定时采集已启用" : "定时采集已暂停");
+      refreshOverview();
+    } catch (err) {
+      e.target.checked = !enabled;
+      toast(err.message, true);
+    }
+  });
+
+  $("intervalSelect").addEventListener("change", async (e) => {
+    if (e.target.value === "custom") {
+      $("customRow").style.display = "flex";
+      $("customMinutes").value = state.interval;
+      return;
+    }
+    $("customRow").style.display = "none";
+    await saveInterval(Number(e.target.value));
+  });
+
+  $("customSave").addEventListener("click", async () => {
+    const minutes = Number($("customMinutes").value);
+    if (!minutes || minutes < 5 || minutes > 10080) {
+      toast("间隔需在 5 ~ 10080 分钟之间", true);
+      return;
+    }
+    await saveInterval(minutes);
+  });
+
+  async function saveInterval(minutes) {
+    try {
+      await api("/admin/api/scheduler", {
+        method: "POST",
+        body: JSON.stringify({ enabled: $("schedToggle").checked, interval_minutes: minutes })
+      });
+      state.interval = minutes;
+      toast("采集频率已更新");
+      refreshOverview();
+    } catch (err) {
+      toast(err.message, true);
+    }
+  }
+
+  $("searchBtn").addEventListener("click", () => { state.page = 1; loadVideos(); });
+  $("searchInput").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { state.page = 1; loadVideos(); }
+  });
+  $("categorySelect").addEventListener("change", () => { state.page = 1; loadVideos(); });
+  $("prevPage").addEventListener("click", () => {
+    if (state.page > 1) { state.page -= 1; loadVideos(); }
+  });
+  $("nextPage").addEventListener("click", () => {
+    if (state.page < state.pages) { state.page += 1; loadVideos(); }
+  });
+
+  $("tokenBtn").addEventListener("click", () => {
+    $("tokenbar").classList.toggle("show");
+    $("tokenInput").value = token;
+  });
+  function saveToken() {
+    token = $("tokenInput").value.trim();
+    if (token) localStorage.setItem("libretv_admin_token", token);
+    else localStorage.removeItem("libretv_admin_token");
+    $("tokenbar").classList.remove("show");
+    refreshOverview();
+    loadVideos();
+  }
+  $("tokenSave").addEventListener("click", saveToken);
+  $("tokenInput").addEventListener("keydown", (e) => { if (e.key === "Enter") saveToken(); });
+
+  // ---- 单次采集日志弹窗 ----
+  let logTimer = null;
+  let currentRun = null;
+
+  function stopLogTimer() {
+    if (logTimer) { clearInterval(logTimer); logTimer = null; }
+  }
+
+  function logEmpty(message) {
+    $("logView").innerHTML = '<div class="empty-state">' + esc(message) + "</div>";
+  }
+
+  async function loadLogs() {
+    const view = $("logView");
+    const nearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 60;
+    try {
+      const params = new URLSearchParams({
+        lines: "500",
+        level: $("logLevel").value,
+        q: $("logSearch").value.trim()
+      });
+      if (currentRun) params.set("run_id", String(currentRun));
+      const data = await api("/admin/api/logs?" + params.toString());
+
+      $("logTitle").textContent = data.run
+        ? "采集日志 · #" + data.run.id + " " + modeLabel(data.run.mode)
+        : "采集日志";
+      $("logFile").textContent = data.file;
+
+      if (!data.exists) {
+        logEmpty("日志文件尚未生成，服务产生日志后会自动出现");
+        $("logMeta").textContent = "暂无日志";
+        return;
+      }
+      if (data.expired) {
+        logEmpty("该次采集的日志已超出 30 天保留期，已被自动清理");
+        $("logMeta").textContent = "日志已过期";
+        return;
+      }
+
+      view.innerHTML = data.lines.length ? data.lines.map((line) => {
+        let cls = "";
+        if (line.includes(" ERROR ")) cls = " lv-error";
+        else if (line.includes(" WARNING ")) cls = " lv-warn";
+        else if (line.includes(" DEBUG ")) cls = " lv-debug";
+        return '<div class="log-line' + cls + '">' + esc(line) + "</div>";
+      }).join("") : '<div class="empty-state">本次采集没有匹配的日志</div>';
+
+      let meta = "匹配 " + num(data.total) + " 行";
+      if (data.window) {
+        const online = data.run && data.run.status === "running";
+        meta += " · " + shortTime(data.window.from) + " ~ " + (online ? "进行中" : shortTime(data.window.to));
+      }
+      meta += " · 更新于 " + new Date().toLocaleTimeString("zh-CN", { hour12: false });
+      $("logMeta").textContent = meta;
+      if (nearBottom) view.scrollTop = view.scrollHeight;
+    } catch (err) {
+      logEmpty(err.message);
+    }
+  }
+
+  function openLogs(runId) {
+    currentRun = runId || null;
+    $("logModal").classList.add("show");
+    $("logModal").setAttribute("aria-hidden", "false");
+    document.body.style.overflow = "hidden";
+    logEmpty("加载中…");
+    loadLogs();
+    stopLogTimer();
+    logTimer = setInterval(() => {
+      if ($("logAuto").checked) loadLogs();
+    }, 3000);
+  }
+
+  function closeLogs() {
+    $("logModal").classList.remove("show");
+    $("logModal").setAttribute("aria-hidden", "true");
+    document.body.style.overflow = "";
+    stopLogTimer();
+  }
+
+  $("runsBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-run]");
+    if (btn) openLogs(Number(btn.getAttribute("data-run")));
+  });
+  $("logClose").addEventListener("click", closeLogs);
+  document.querySelector("#logModal .modal-backdrop").addEventListener("click", closeLogs);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("logModal").classList.contains("show")) closeLogs();
+  });
+  $("logRefresh").addEventListener("click", loadLogs);
+  $("logLevel").addEventListener("change", loadLogs);
+  let logSearchTimer;
+  $("logSearch").addEventListener("input", () => {
+    clearTimeout(logSearchTimer);
+    logSearchTimer = setTimeout(loadLogs, 300);
+  });
+
+  refreshOverview();
+  loadVideos();
+  setInterval(refreshOverview, 5000);
+})();
+</script>
+</body>
+</html>

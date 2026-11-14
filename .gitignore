@@ -19,6 +19,17 @@ releases/
 
 **/__pycache__/
 *.pyc
+**/.venv/
+**/venv/
+**/.env
+!**/.env.example
+**/.pytest_cache/
+**/.ruff_cache/
+**/.mypy_cache/
+
+# 数据库备份文件
+*.dump
+*.sql.gz
 
 app/build-family-upgrade/
 
