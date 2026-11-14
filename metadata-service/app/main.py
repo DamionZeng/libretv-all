@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# 宝塔「Python 项目」把项目路径指到 app/ 目录、以 main:app 方式加载时，
+# app 包不在 sys.path 里，这里把上一级（metadata-service）补进去。
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import asyncio
 import contextlib
 import logging
