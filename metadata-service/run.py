@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -23,4 +24,7 @@ from app.config import settings  # noqa: E402
 from app.main import app  # noqa: E402,F401  供 gunicorn 用 run:app
 
 if __name__ == "__main__":
-    uvicorn.run(app, host=settings.api_host, port=settings.api_port, access_log=False)
+    # 面板可能通过 PORT 环境变量注入端口，优先使用
+    host = os.getenv("API_HOST", settings.api_host)
+    port = int(os.getenv("PORT", settings.api_port))
+    uvicorn.run(app, host=host, port=port, access_log=False)
