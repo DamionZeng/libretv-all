@@ -33,6 +33,8 @@ public final class TvHomeActivity extends Activity {
     private String year = CatalogRepository.ALL;
     private String area = CatalogRepository.ALL;
     private int sort = CatalogRepository.SORT_TIME;
+    /** 片库筛选区是否展开，默认展开；收起后只保留工具条与卡片列表。 */
+    private boolean filtersOpen = true;
     private String rankCategory = "电影";
     private JSONArray ranking = new JSONArray();
     private boolean rankLoaded, rankLoading;
@@ -75,6 +77,7 @@ public final class TvHomeActivity extends Activity {
             focusKey = state.getString("focusKey", "hero"); browsePage = state.getInt("browsePage", 1);
             year = state.getString("year", CatalogRepository.ALL);
             area = state.getString("area", CatalogRepository.ALL);
+            filtersOpen = state.getBoolean("filtersOpen", true);
         }
         if (state == null) applyPage(getIntent());
         UpdateActivity.checkInBackground(this);
@@ -236,6 +239,10 @@ public final class TvHomeActivity extends Activity {
             if (target == null) target = targets.get("nav-home");
             if (target != null) target.requestFocusFromTouch();
             restoring = false;
+            // 首次进入非首页时，聚焦卡片会让 ScrollView 自动上滚，导致标题被顶栏裁掉，这里复位到顶部。
+            String firstKey = page.equals("browse") ? "browse-0"
+                    : page.equals("rank") ? "rank-0" : page.equals("history") ? "history-0" : "hero";
+            if (!page.equals("home") && firstKey.equals(restore)) scroll.scrollTo(0, 0);
             if (page.equals("browse")) autoLoadIfShort();
         });
         if (page.equals("home") && catalog != null) loadHome(ticket);
@@ -445,27 +452,70 @@ public final class TvHomeActivity extends Activity {
         if (value.equals(area)) return;
         area = value; reloadBrowse();
     }
-    private void filterSort(int value) {
+    private void filterSort(int value, String focus) {
         if (value == sort) return;
-        sort = value; reloadBrowse();
+        sort = value; reloadBrowse(focus);
     }
-    private void reloadBrowse() {
+    /** 排序左右切换：两个选项之间来回切，焦点停留在按下的箭头上。 */
+    private void stepSort(int delta) {
+        filterSort(sort == CatalogRepository.SORT_RATE ? CatalogRepository.SORT_TIME : CatalogRepository.SORT_RATE,
+                delta > 0 ? "sort-next" : "sort-prev");
+    }
+    /** 「筛选」开关：收起或展开类型、年份、国家三行筛选项。 */
+    private void toggleFilters() {
+        filtersOpen = !filtersOpen;
+        focusKey = "filter-toggle";
+        render();
+    }
+    /** 排序切换器两侧的小箭头按钮。 */
+    private void sortArrow(LinearLayout parent, String arrow, String key, int delta) {
+        Button b = new Button(this); b.setText(arrow); b.setAllCaps(false); b.setTextSize(16);
+        b.setTextColor(new android.content.res.ColorStateList(
+                new int[][]{new int[]{android.R.attr.state_focused}, new int[]{}}, new int[]{ACCENT, TEXT_2}));
+        b.setMinWidth(0); b.setMinimumWidth(0); b.setMinHeight(0); b.setMinimumHeight(0); b.setPadding(0, 0, 0, 0);
+        register(b, key, () -> stepSort(delta), 0x00000000, 999);
+        parent.addView(b, new LinearLayout.LayoutParams(dp(30), dp(30)));
+    }
+    private void reloadBrowse() { reloadBrowse("browse-0"); }
+    private void reloadBrowse(String focus) {
         if (browsePending != null) browsePending.cancel(true);
         browsePage = 1; browseItems = new JSONArray();
         browseHasMore = false;
-        browseLoaded = false; browseLoading = false; browseFinished = false; focusKey = "browse-0"; render();
+        browseLoaded = false; browseLoading = false; browseFinished = false; focusKey = focus; render();
     }
     private void renderBrowse() {
+        /* 标题行：「片库」右侧依次是筛选开关与排序左右切换，数量提示留在最右 */
         LinearLayout titleRow = row(body); titleRow.setGravity(Gravity.CENTER_VERTICAL); titleRow.setPadding(0, dp(4), 0, dp(8));
-        titleRow.addView(heading("片库", 30), new LinearLayout.LayoutParams(0, -2, 1));
+        TextView browseTitle = heading("片库", 30);
+        browseTitle.setPadding(0, 0, dp(20), 0);
+        titleRow.addView(browseTitle, new LinearLayout.LayoutParams(-2, -2));
+
+        List<String> toolKeys = new ArrayList<>();
+        button(titleRow, filtersOpen ? "筛选  ▲" : "筛选  ▼", "filter-toggle", this::toggleFilters);
+        toolKeys.add("filter-toggle");
+        LinearLayout sortBox = new LinearLayout(this); sortBox.setOrientation(LinearLayout.HORIZONTAL);
+        sortBox.setGravity(Gravity.CENTER_VERTICAL); sortBox.setBackground(rounded(SURFACE, 999));
+        sortBox.setPadding(dp(3), dp(2), dp(3), dp(2));
+        LinearLayout.LayoutParams sortParams = new LinearLayout.LayoutParams(-2, dp(38));
+        sortParams.setMargins(dp(6), 0, 0, 0); titleRow.addView(sortBox, sortParams);
+        sortArrow(sortBox, "‹", "sort-prev", -1); toolKeys.add("sort-prev");
+        TextView sortLabel = text(sort == CatalogRepository.SORT_RATE ? "按评分" : "按时间", 13, ACCENT);
+        sortLabel.setGravity(Gravity.CENTER); sortLabel.setContentDescription("当前排序：" + sortLabel.getText());
+        sortBox.addView(sortLabel, new LinearLayout.LayoutParams(dp(70), -2));
+        sortArrow(sortBox, "›", "sort-next", 1); toolKeys.add("sort-next");
+        focusRows.add(toolKeys);
+
+        titleRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         browseStatus = text("", 13, TEXT_3);
         titleRow.addView(browseStatus);
-        filterRow("类型", CatalogRepository.CATEGORIES, section, this::filterCategory);
-        filterRow("排序", new String[]{"按时间", "按评分"},
-                sort == CatalogRepository.SORT_RATE ? "按评分" : "按时间",
-                value -> filterSort("按评分".equals(value) ? CatalogRepository.SORT_RATE : CatalogRepository.SORT_TIME));
-        filterRow("年份", CatalogRepository.YEARS, year, this::filterYear);
-        filterRow("国家", CatalogRepository.AREAS, area, this::filterArea);
+
+        if (filtersOpen) {
+            LinearLayout panel = new LinearLayout(this); panel.setOrientation(LinearLayout.VERTICAL);
+            body.addView(panel, new LinearLayout.LayoutParams(-1, -2));
+            filterRow(panel, "类型", CatalogRepository.CATEGORIES, section, this::filterCategory);
+            filterRow(panel, "年份", CatalogRepository.YEARS, year, this::filterYear);
+            filterRow(panel, "国家", CatalogRepository.AREAS, area, this::filterArea);
+        }
         LinearLayout left = new LinearLayout(this); left.setOrientation(LinearLayout.VERTICAL);
         left.setPadding(0, dp(10), 0, 0);
         body.addView(left, new LinearLayout.LayoutParams(-1, -2));
@@ -498,9 +548,9 @@ public final class TvHomeActivity extends Activity {
         else if (browseHasMore) browseFooter.setText("继续下滑自动加载更多");
         else browseFooter.setText("已加载全部 " + browseItems.length() + " 部");
     }
-    /** 片库顶部的一行筛选胶囊，单选。 */
-    private void filterRow(String label, String[] values, String current, java.util.function.Consumer<String> pick) {
-        LinearLayout row = row(body); row.setPadding(0, dp(1), 0, dp(1)); row.setGravity(Gravity.CENTER_VERTICAL);
+    /** 片库顶部的一行筛选胶囊，单选；由「筛选」开关统一收起或展开。 */
+    private void filterRow(LinearLayout parent, String label, String[] values, String current, java.util.function.Consumer<String> pick) {
+        LinearLayout row = row(parent); row.setPadding(0, dp(1), 0, dp(1)); row.setGravity(Gravity.CENTER_VERTICAL);
         TextView caption = text(label, 13, TEXT_3);
         row.addView(caption, new LinearLayout.LayoutParams(dp(48), -2));
         List<String> keys = new ArrayList<>();
@@ -793,6 +843,7 @@ public final class TvHomeActivity extends Activity {
         out.putString("focusKey", focusKey); out.putInt("browsePage", browsePage);
         out.putString("rankCategory", rankCategory);
         out.putString("year", year); out.putString("area", area);
+        out.putBoolean("filtersOpen", filtersOpen);
         super.onSaveInstanceState(out);
     }
     @Override protected void onStop() {

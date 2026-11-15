@@ -61,6 +61,7 @@ public final class MainActivity extends Activity {
     private java.io.File pendingUpdate;
     private int pendingUpdateCode;
     private LinearLayout root, content;
+    private ScrollView pageScroll;
     private TextView message;
     private NasClient client;
     private JSONArray sources = new JSONArray(), results = new JSONArray(), episodes = new JSONArray(), episodeNames = new JSONArray();
@@ -299,7 +300,7 @@ public final class MainActivity extends Activity {
         b.setMinWidth(0);b.setMinimumWidth(0);b.setMinHeight(0);b.setMinimumHeight(0);
         b.setPadding(dp(26),0,dp(26),0);b.setFocusableInTouchMode(true);
         b.setTextColor(primary?0xff1a1206:STEXT_1);
-        b.setBackground(primary?detailPrimaryState():selectable(SSURFACE,999));
+        b.setBackground(primary?detailPrimaryState():detailSecondaryState());
         b.setOnFocusChangeListener((v,focused)->{
             v.setElevation(focused?dp(6):0);
             if(!primary)b.setTextColor(focused?SACCENT:STEXT_1);
@@ -307,6 +308,29 @@ public final class MainActivity extends Activity {
         b.setOnClickListener(v->{if(!busy)action.run();});
         LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(52));lp.setMargins(0,dp(16),dp(12),0);
         parent.addView(b,lp);return b;
+    }
+    /** 次要操作按钮：比页面底色亮一档并加细描边，避免在暗背景上边缘糊掉、看着像被裁。 */
+    private StateListDrawable detailSecondaryState(){
+        StateListDrawable d=new StateListDrawable();
+        GradientDrawable focused=rounded(SSURFACE_2,999);focused.setStroke(dp(2),SACCENT);
+        GradientDrawable normal=rounded(0xff23272e,999);normal.setStroke(dp(2),0xff4a515b);
+        d.addState(new int[]{android.R.attr.state_focused},focused);
+        d.addState(new int[]{},normal);return d;
+    }
+    /** 详情页操作按钮：用可聚焦 TextView 绘制，避开 Button 默认样式的内缩与最小高度，保证 52dp 背景完整不裁边。 */
+    private TextView actionButton(LinearLayout parent,String text,boolean primary,Runnable action){
+        TextView b=new TextView(this);b.setText(text);b.setTextSize(16);b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);b.setIncludeFontPadding(false);
+        b.setPadding(dp(26),0,dp(26),0);b.setFocusable(true);b.setFocusableInTouchMode(true);
+        b.setTextColor(primary?0xff1a1206:STEXT_1);
+        b.setBackground(primary?detailPrimaryState():detailSecondaryState());
+        b.setOnFocusChangeListener((v,focused)->{
+            v.setElevation(focused?dp(6):0);
+            if(!primary)b.setTextColor(focused?SACCENT:STEXT_1);
+        });
+        b.setOnClickListener(v->{if(!busy)action.run();});
+        LinearLayout.LayoutParams lp=new LinearLayout.LayoutParams(-2,dp(52));
+        lp.setMargins(0,0,dp(12),0);parent.addView(b,lp);return b;
     }
     private StateListDrawable episodeState(boolean current){
         StateListDrawable d=new StateListDrawable();
@@ -474,7 +498,7 @@ public final class MainActivity extends Activity {
         root.addView(label(heading.replace("星光影院   /   ","").replace("星光影院 · ",""), 24));
         message = label("", 15); message.setVisibility(View.GONE);
         message.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE); root.addView(message);
-        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true);
+        ScrollView scroll = new ScrollView(this); scroll.setFillViewport(true); pageScroll = scroll;
         content = new LinearLayout(this); content.setOrientation(LinearLayout.VERTICAL);
         scroll.addView(content); root.addView(scroll, new LinearLayout.LayoutParams(-1, 0, 1));
         setContentView(root);
@@ -1170,25 +1194,30 @@ public final class MainActivity extends Activity {
         String artwork = coverUrl.isEmpty() ? selected.optString("pic") : coverUrl;
 
         /* —— 剧照 Hero：通栏剧照 + 侧向/底部渐变 + 竖版海报 + 主信息 —— */
+        // 高度改为随内容自适应，避免信息较多时底部的三个按钮被 Hero 裁掉。
         FrameLayout hero = new FrameLayout(this);
-        LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, dp(430));
+        LinearLayout.LayoutParams heroParams = new LinearLayout.LayoutParams(-1, -2);
         heroParams.setMargins(-dp(40), 0, -dp(40), 0);
         content.addView(hero, heroParams);
+        FrameLayout heroStage = new FrameLayout(this);
+        // 剧照铺满整个 Hero（高度随内容自适应），避免剧照底边横穿按钮造成"底部被切"的观感。
+        hero.addView(heroStage, new FrameLayout.LayoutParams(-1, -1));
         ImageView backdrop = new ImageView(this); backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
         backdrop.setAlpha(0.6f);
-        hero.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
+        heroStage.addView(backdrop, new FrameLayout.LayoutParams(-1, -1));
         posters.load(backdrop, client, artwork);
         View dim = new View(this); dim.setBackgroundColor(0x400e0f11);
-        hero.addView(dim, new FrameLayout.LayoutParams(-1, -1));
+        heroStage.addView(dim, new FrameLayout.LayoutParams(-1, -1));
         View veil = new View(this);
         veil.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{0xfa0e0f11, 0xdc0e0f11, 0x6b0e0f11, 0x330e0f11}));
-        hero.addView(veil, new FrameLayout.LayoutParams(-1, -1));
+        heroStage.addView(veil, new FrameLayout.LayoutParams(-1, -1));
         View shade = new View(this);
         shade.setBackground(new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP, new int[]{0xff0e0f11, 0xcc0e0f11, 0x000e0f11}));
-        hero.addView(shade, new FrameLayout.LayoutParams(-1, dp(250), Gravity.BOTTOM));
+        heroStage.addView(shade, new FrameLayout.LayoutParams(-1, dp(200), Gravity.BOTTOM));
 
         LinearLayout heroBody = new LinearLayout(this); heroBody.setOrientation(LinearLayout.HORIZONTAL);
-        heroBody.setGravity(Gravity.BOTTOM); heroBody.setPadding(dp(64), dp(26), dp(64), dp(30));
+        // 顶部留出返回按钮的高度，避免海报与返回按钮重叠；底部留白保证按钮四周不贴边。
+        heroBody.setGravity(Gravity.BOTTOM); heroBody.setPadding(dp(64), dp(56), dp(64), dp(26));
         hero.addView(heroBody, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
 
         Button back = new Button(this);
@@ -1201,16 +1230,16 @@ public final class MainActivity extends Activity {
         back.setOnFocusChangeListener((v, focused) -> v.setElevation(focused ? dp(6) : 0));
         back.setOnClickListener(v -> { if (!busy) returnFromDetail(); });
         FrameLayout.LayoutParams backParams = new FrameLayout.LayoutParams(-2, dp(40), Gravity.TOP | Gravity.START);
-        backParams.setMargins(dp(64), dp(22), 0, 0); hero.addView(back, backParams);
+        backParams.setMargins(dp(64), dp(8), 0, 0); hero.addView(back, backParams);
 
         FrameLayout posterFrame = new FrameLayout(this); posterFrame.setBackground(rounded(SSURFACE, 16)); clipRounded(posterFrame, 16);
         posterFrame.setElevation(dp(12));
-        heroBody.addView(posterFrame, new LinearLayout.LayoutParams(dp(178), dp(252)));
+        heroBody.addView(posterFrame, new LinearLayout.LayoutParams(dp(156), dp(220)));
         ImageView poster = new ImageView(this); poster.setScaleType(ImageView.ScaleType.CENTER_CROP);
         posterFrame.addView(poster, new FrameLayout.LayoutParams(-1, -1)); posters.load(poster, client, artwork);
 
         LinearLayout info = new LinearLayout(this); info.setOrientation(LinearLayout.VERTICAL);
-        info.setPadding(dp(30), 0, 0, 0);
+        info.setPadding(dp(26), 0, 0, 0);
         heroBody.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
 
         LinearLayout kicker = row(); info.addView(kicker);
@@ -1219,7 +1248,7 @@ public final class MainActivity extends Activity {
         kicker.addView(sourceName);
         kicker.addView(starlightText(episodes.length() > 1 ? "   ·   全 " + episodes.length() + " 集" : "   ·   正片", 13, STEXT_3));
 
-        TextView name = starlightText(title, 38, STEXT_1); name.setMaxLines(2);
+        TextView name = starlightText(title, 34, STEXT_1); name.setMaxLines(2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL)); name.setPadding(0, dp(8), 0, 0);
         info.addView(name);
@@ -1243,16 +1272,19 @@ public final class MainActivity extends Activity {
             starlightProgress(info, saved);
         }
 
-        LinearLayout actions = row(); actions.setGravity(Gravity.CENTER_VERTICAL); info.addView(actions);
-        Button primaryAction = detailButton(actions, saved == null ? "▶   开始观看" : "▶   继续播放", true, () -> preparePlayback(resumeIndex));
+        /* —— 操作按钮：放在海报右侧的介绍信息下方 —— */
+        LinearLayout actions = row(); actions.setGravity(Gravity.CENTER_VERTICAL);
+        actions.setPadding(0, dp(18), 0, 0);
+        TextView primaryAction = actionButton(actions, saved == null ? "▶   开始观看" : "▶   继续播放", true, () -> preparePlayback(resumeIndex));
         boolean listed = store.contains(detailSource, selected);
-        detailButton(actions, listed ? "移出片单" : "加入片单", false, () -> task("正在保存片单", () -> { if (listed) store.remove(PlaybackStore.identity(detailSource, selected)); else store.add(detailSource, selected, title); return true; }, ok -> showDetail()));
-        detailButton(actions, "切换来源", false, this::showSourcePicker);
+        actionButton(actions, listed ? "移出片单" : "加入片单", false, () -> task("正在保存片单", () -> { if (listed) store.remove(PlaybackStore.identity(detailSource, selected)); else store.add(detailSource, selected, title); return true; }, ok -> showDetail()));
+        actionButton(actions, "切换来源", false, this::showSourcePicker);
+        info.addView(actions, new LinearLayout.LayoutParams(-1, -2));
 
         /* —— 剧情简介：放在 Hero 下方，保证长文本可读 —— */
         LinearLayout synopsis = new LinearLayout(this); synopsis.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams synopsisParams = new LinearLayout.LayoutParams(-1, -2);
-        synopsisParams.setMargins(0, dp(30), 0, 0); content.addView(synopsis, synopsisParams);
+        synopsisParams.setMargins(0, dp(12), 0, 0); content.addView(synopsis, synopsisParams);
         sectionTitle(synopsis, "剧情简介", "");
         String desc = detailInfo.optString("desc");
         TextView description = starlightText("", 15, STEXT_2); description.setMaxLines(4);
@@ -1325,6 +1357,8 @@ public final class MainActivity extends Activity {
             episode.setOnClickListener(v -> { if (!busy) preparePlayback(index); });
         }
         primaryAction.requestFocus();
+        // 聚焦首要按钮时系统可能把页面自动上滚，导致剧照与按钮被裁掉；这里强制回到顶部。
+        if (pageScroll != null) pageScroll.post(() -> pageScroll.scrollTo(0, 0));
         renderRelated();
     }
     /** 同类推荐：由当前影片分类驱动，卡片直接进入对应详情。 */
