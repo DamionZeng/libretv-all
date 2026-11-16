@@ -21,7 +21,7 @@
         <activity android:name=".SourceScannerActivity" android:exported="false" android:screenOrientation="user" />
         <activity android:name=".TvHomeActivity" android:exported="false" android:screenOrientation="landscape" />
         <activity android:name=".DirectPlayerActivity" android:exported="false" />
-        <activity android:name=".PhoneActivity" android:exported="false" android:screenOrientation="user" android:configChanges="orientation|screenSize" android:windowSoftInputMode="adjustResize" />
+        <activity android:name=".PhoneActivity" android:exported="false" android:screenOrientation="user" android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|fontScale|keyboardHidden" android:windowSoftInputMode="adjustResize" />
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="user">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

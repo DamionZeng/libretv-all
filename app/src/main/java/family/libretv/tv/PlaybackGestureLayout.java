@@ -51,14 +51,14 @@ final class PlaybackGestureLayout extends FrameLayout {
             }
             @Override public boolean onDoubleTap(MotionEvent e){
                 doubleTap=true;
-                float fraction=e.getX()/Math.max(1,getWidth());
-                if(vodGestures&&fraction>=.33f&&fraction<=.67f)return true;
-                if(sameMedia()&&canSeek()) {
-                    long step=vodGestures?10000:5000;
-                    long delta=fraction<.5f?-step:step;
-                    long target=clamp(player.getCurrentPosition()+delta,player.getDuration());
-                    player.seekTo(target);show((delta<0?"后退 ":"前进 ")+(step/1000)+" 秒\n"+time(target));
-                } else show(vodGestures?"当前视频暂不支持调整进度":"这个频道暂不支持调整进度");
+                if(player==null)return true;
+                // 双击暂停 / 继续播放；进度调节交给横向拖动。
+                if(player.isPlaying()){
+                    player.pause();show("已暂停");
+                }else{
+                    if(player.getPlaybackState()==Player.STATE_ENDED)player.seekTo(0);
+                    player.play();show("继续播放");
+                }
                 hideLater();return true;
             }
         },handler);

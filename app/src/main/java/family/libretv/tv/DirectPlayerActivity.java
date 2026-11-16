@@ -28,13 +28,13 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Arrays;
 
-/** Phone playback: one player, bounded episode controls, and durable local progress. */
+/** Phone playback: one player, bottom-anchored timeline, and durable local progress. */
 @androidx.media3.common.util.UnstableApi
 public final class DirectPlayerActivity extends Activity {
     private ExoPlayer player;
     private PlayerView playerView;
     private PlaybackGestureLayout stage;
-    private LinearLayout topChrome,bottomChrome;
+    private LinearLayout topChrome;
     private boolean controlsVisible=true;
     private SubtitleMenu subtitles;
     private AlertDialog dialog;
@@ -46,13 +46,11 @@ public final class DirectPlayerActivity extends Activity {
     private String title;
     private TextView status, episodeCaption;
     private LinearLayout episodeGrid;
-    private TextView landscapeCaption;
     private boolean landscape;
     private int entryOrientation;
-    private Button previous, next, speed, subtitle;
+    private Button previous, next, speed;
     private Switch autoNext;
     private PlaybackStore history;
-    private SegmentSkipController segmentSkip;
     private SharedPreferences settings;
     private final Handler main = new Handler(Looper.getMainLooper());
     private final Runnable checkpoint = new Runnable() {
@@ -64,6 +62,12 @@ public final class DirectPlayerActivity extends Activity {
         setVolumeControlStream(android.media.AudioManager.STREAM_MUSIC);
         if(state!=null&&state.containsKey("windowBrightness")){android.view.WindowManager.LayoutParams attrs=getWindow().getAttributes();attrs.screenBrightness=state.getFloat("windowBrightness");getWindow().setAttributes(attrs);}
         WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+        // 竖屏播放页同样使用深色系统栏，避免底部出现白色三键导航条。
+        getWindow().setStatusBarColor(Color.TRANSPARENT);
+        getWindow().setNavigationBarColor(Color.TRANSPARENT);
+        if(android.os.Build.VERSION.SDK_INT>=29)getWindow().setNavigationBarContrastEnforced(false);
+        WindowInsetsControllerCompat controller=WindowCompat.getInsetsController(getWindow(),getWindow().getDecorView());
+        controller.setAppearanceLightStatusBars(false);controller.setAppearanceLightNavigationBars(false);
         history = new PlaybackStore(this);
         settings = getSharedPreferences("standalone-player", 0);
         urls = getIntent().getStringArrayListExtra("episodes");
@@ -88,85 +92,115 @@ public final class DirectPlayerActivity extends Activity {
         TextView t=new TextView(this);t.setText(value);t.setTextColor(PlayerStyle.TEXT);t.setTextSize(size);return t;
     }
     private LinearLayout column(){LinearLayout l=new LinearLayout(this);l.setOrientation(LinearLayout.VERTICAL);return l;}
-    private Button action(LinearLayout row,String text,String icon,Runnable run){
-        Button b=PlayerStyle.action(this,text,icon,false);row.addView(b,new LinearLayout.LayoutParams(0,dp(64),1));
-        b.setOnClickListener(v->{playerView.showController();run.run();});return b;
+    /** 悬浮条上的文字按钮：选集、倍速，保持透明底 + 按压高亮。 */
+    private Button overlayAction(String text,Runnable run){
+        Button b=PlayerStyle.action(this,text,"",false);
+        // action() 给带文字的按钮塞了一个 24dp 的空图标占位（drawableTop），
+        // 会把文字整体顶到按钮底部，这里清掉才能垂直居中。
+        b.setCompoundDrawables(null,null,null,null);b.setCompoundDrawablePadding(0);
+        b.setGravity(Gravity.CENTER);
+        b.setTextSize(14);b.setPadding(0,0,0,0);b.setMinimumHeight(dp(44));
+        b.setOnClickListener(v->{playerView.showController();run.run();});
+        return b;
+    }
+    /** drawableLeft 会被画在按钮最左边而不居中，这里用整块方框包一层，把图标摆在方框正中。 */
+    private static final class CenteredIcon extends android.graphics.drawable.Drawable {
+        private final android.graphics.drawable.Drawable child;private final int inset;
+        CenteredIcon(android.graphics.drawable.Drawable child,int inset){this.child=child;this.inset=inset;}
+        @Override public void draw(android.graphics.Canvas canvas){
+            android.graphics.Rect b=getBounds();
+            child.setBounds(b.left+inset,b.top+inset,b.right-inset,b.bottom-inset);child.draw(canvas);
+        }
+        @Override public void setAlpha(int alpha){child.setAlpha(alpha);}
+        @Override public void setColorFilter(android.graphics.ColorFilter filter){child.setColorFilter(filter);}
+        @Override public int getOpacity(){return android.graphics.PixelFormat.TRANSLUCENT;}
+        @Override public boolean isStateful(){return child.isStateful();}
+        @Override protected boolean onStateChange(int[] state){boolean changed=child.setState(state);invalidateSelf();return changed;}
+    }
+    private void centerIcon(Button b,String kind,int sizeDp,int boxDp){
+        int box=dp(boxDp);
+        CenteredIcon icon=new CenteredIcon(new PlayerStyle.Icon(kind),(box-dp(sizeDp))/2);
+        icon.setBounds(0,0,box,box);
+        b.setCompoundDrawables(icon,null,null,null);b.setCompoundDrawablePadding(0);
     }
     private void changeOrientation(){setRequestedOrientation(landscape?ActivityInfo.SCREEN_ORIENTATION_PORTRAIT:ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE);}
     @Override protected void onStart() {
         super.onStart();
         boolean restoreControls=controlsVisible;
-        segmentSkip = new SegmentSkipController(this, title, this::holdControls, this::resumeControls, this::finishSkippedEpisode);
         landscape=getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE;
         stage=new PlaybackGestureLayout(this);stage.setBackgroundColor(Color.BLACK);
         playerView=(PlayerView)LayoutInflater.from(this).inflate(R.layout.player_phone_view,stage,false);
         stage.addView(playerView,new FrameLayout.LayoutParams(-1,-1));
         playerView.setControllerShowTimeoutMs(3000);playerView.setControllerHideOnTouch(true);playerView.setControllerAutoShow(true);
+        // 底部一条控制条：上一集 / 播放暂停 / 下一集 靠左，选集 / 倍速 靠右。
         previous=playerView.findViewById(R.id.player_previous_episode);next=playerView.findViewById(R.id.player_next_episode);
-        for(Button b:new Button[]{previous,next}){b.setMinWidth(0);b.setMinimumWidth(0);b.setText("");b.setBackground(PlayerStyle.background(this,false));}
-        PlayerStyle.setIcon(previous,"previous",24);PlayerStyle.setIcon(next,"next",24);
-        previous.setOnClickListener(v->switchEpisode(index-1));next.setOnClickListener(v->switchEpisode(index+1));
-        previous.setVisibility(landscape?View.VISIBLE:View.GONE);next.setVisibility(landscape?View.VISIBLE:View.GONE);
+        for(Button b:new Button[]{previous,next}){
+            b.setMinWidth(0);b.setMinimumWidth(0);b.setText("");b.setBackground(PlayerStyle.background(this,false));
+        }
+        // 图标在 42dp 方框内居中，三个按钮的视觉中心才对得上。
+        centerIcon(previous,"previous",26,42);centerIcon(next,"next",26,42);
+        previous.setOnClickListener(v->{playerView.showController();switchEpisode(index-1);});
+        next.setOnClickListener(v->{playerView.showController();switchEpisode(index+1);});
+        LinearLayout controlsEnd=playerView.findViewById(R.id.player_controls_end);
+        if(controlsEnd!=null){
+            controlsEnd.addView(overlayAction("选集",this::chooseEpisode),new LinearLayout.LayoutParams(dp(56),dp(44)));
+            speed=overlayAction("倍速",this::chooseSpeed);
+            controlsEnd.addView(speed,new LinearLayout.LayoutParams(dp(64),dp(44)));
+        }
+        View shade=playerView.findViewById(R.id.player_lower_shade);
+        if(shade!=null){ViewGroup.LayoutParams p=shade.getLayoutParams();p.height=dp(landscape?190:112);shade.setLayoutParams(p);}
         topChrome=column();topChrome.setBackgroundResource(R.drawable.player_top);
         LinearLayout heading=new LinearLayout(this);heading.setGravity(Gravity.CENTER_VERTICAL);topChrome.addView(heading);
         Button back=PlayerStyle.action(this,"","back",false);back.setContentDescription("返回选集");heading.addView(back,new LinearLayout.LayoutParams(dp(44),dp(48)));back.setOnClickListener(v->finish());
         LinearLayout titleBox=column();heading.addView(titleBox,new LinearLayout.LayoutParams(0,-2,1));
-        status=label(landscape?title:"播放详情",landscape?18:20);status.setMaxLines(2);titleBox.addView(status);
+        TextView topTitle=label(landscape?title:"播放详情",landscape?18:20);topTitle.setMaxLines(2);titleBox.addView(topTitle);
         episodeCaption=label("",12);episodeCaption.setTextColor(PlayerStyle.MUTED);if(landscape)titleBox.addView(episodeCaption);
         Button rotate=PlayerStyle.action(this,"","rotate",false);rotate.setContentDescription("横屏 / 竖屏");heading.addView(rotate,new LinearLayout.LayoutParams(dp(48),dp(48)));rotate.setOnClickListener(v->changeOrientation());
         Button moreTop=PlayerStyle.action(this,"","more",false);moreTop.setContentDescription("更多");heading.addView(moreTop,new LinearLayout.LayoutParams(dp(44),dp(48)));moreTop.setOnClickListener(v->showMore());
-        bottomChrome=column();bottomChrome.setBackgroundColor(Color.TRANSPARENT);
         autoNext=new Switch(this);autoNext.setText("自动下一集");autoNext.setTextColor(PlayerStyle.TEXT);autoNext.setThumbTintList(new android.content.res.ColorStateList(new int[][]{new int[]{android.R.attr.state_checked},new int[]{}},new int[]{PlayerStyle.ACCENT,PlayerStyle.MUTED}));autoNext.setTrackTintList(android.content.res.ColorStateList.valueOf(0x332e333a));
         autoNext.setChecked(settings.getBoolean("autoNext",true));autoNext.setOnCheckedChangeListener((v,on)->settings.edit().putBoolean("autoNext",on).apply());
         LinearLayout root=column();root.setBackgroundColor(PlayerStyle.BACKDROP);
         if(landscape){
+            // 横屏：只有顶栏 + 视频，播放控制全部收在底部的悬浮条里。
             stage.addView(topChrome,new FrameLayout.LayoutParams(-1,-2,Gravity.TOP));
-            LinearLayout actions=new LinearLayout(this);actions.setGravity(Gravity.CENTER_VERTICAL);bottomChrome.addView(actions);
-            landscapeCaption=label("",13);landscapeCaption.setTextColor(PlayerStyle.MUTED);actions.addView(landscapeCaption,new LinearLayout.LayoutParams(0,-2,1));
-            Button episodes=action(actions,"选集","episodes",this::chooseEpisode);
-            speed=action(actions,"倍速","speed",this::chooseSpeed);
-            subtitle=action(actions,"字幕","subtitle",()->{if(subtitles!=null){holdControls();subtitles.show();}});
-            action(actions,"更多","more",this::showMore);
-            // Compact horizontal actions leave most of the picture unobstructed.
-            for(int i=1;i<actions.getChildCount();i++)actions.getChildAt(i).setLayoutParams(new LinearLayout.LayoutParams(dp(68),dp(64)));
-            stage.addView(bottomChrome,new FrameLayout.LayoutParams(-1,-2,Gravity.BOTTOM));
+            status=topTitle;
             setContentView(stage);
         }else{
             root.addView(topChrome,new LinearLayout.LayoutParams(-1,-2));
             root.addView(stage,new LinearLayout.LayoutParams(-1,dp(Math.round(getResources().getDisplayMetrics().widthPixels/getResources().getDisplayMetrics().density*9/16f))));
-            ScrollView details=new ScrollView(this);details.setFillViewport(true);details.addView(bottomChrome);root.addView(details,new LinearLayout.LayoutParams(-1,0,1));
-            bottomChrome.setBackgroundColor(PlayerStyle.PANEL);bottomChrome.setPadding(dp(18),dp(12),dp(18),dp(16));
-            LinearLayout titleRow=new LinearLayout(this);titleRow.setGravity(Gravity.CENTER_VERTICAL);bottomChrome.addView(titleRow);
-            status=label(title,26);status.setTypeface(null,Typeface.BOLD);titleRow.addView(status,new LinearLayout.LayoutParams(0,-2,1));
-            bottomChrome.addView(episodeCaption);
-            LinearLayout actions=new LinearLayout(this);LinearLayout.LayoutParams ap=new LinearLayout.LayoutParams(-1,dp(68));ap.topMargin=dp(8);bottomChrome.addView(actions,ap);
-            action(actions,"上一集","previous",()->switchEpisode(index-1));action(actions,"下一集","next",()->switchEpisode(index+1));
-            speed=action(actions,"倍速","speed",this::chooseSpeed);
-            subtitle=action(actions,"字幕","subtitle",()->{if(subtitles!=null){holdControls();subtitles.show();}});
-            TextView episodes=label("选集",20);episodes.setTypeface(null,Typeface.BOLD);episodes.setPadding(0,dp(12),0,dp(8));bottomChrome.addView(episodes);
-            episodeGrid=column();bottomChrome.addView(episodeGrid);
-            bottomChrome.addView(autoNext,new LinearLayout.LayoutParams(-1,dp(48)));
+            ScrollView details=new ScrollView(this);details.setFillViewport(true);
+            LinearLayout panel=column();panel.setBackgroundColor(PlayerStyle.PANEL);
+            panel.setPadding(dp(18),dp(12),dp(18),dp(16));
+            status=label(title,24);status.setTypeface(null,Typeface.BOLD);panel.addView(status);
+            panel.addView(episodeCaption);
+            TextView caption=label("选集",18);caption.setTypeface(null,Typeface.BOLD);caption.setPadding(0,dp(14),0,dp(6));panel.addView(caption);
+            episodeGrid=column();panel.addView(episodeGrid);
+            panel.addView(autoNext,new LinearLayout.LayoutParams(-1,dp(48)));
+            details.addView(panel);
+            root.addView(details,new LinearLayout.LayoutParams(-1,0,1));
             setContentView(root);
         }
-        segmentSkip.addControls(bottomChrome, false);
         ViewCompat.setOnApplyWindowInsetsListener(landscape?stage:root,(v,insets)->{
             androidx.core.graphics.Insets bars=insets.getInsets(WindowInsetsCompat.Type.systemBars()|WindowInsetsCompat.Type.displayCutout());
-            if(landscape){topChrome.setPadding(bars.left+dp(16),bars.top+dp(6),bars.right+dp(16),dp(12));bottomChrome.setPadding(bars.left+dp(20),dp(4),bars.right+dp(20),bars.bottom+dp(4));}
-            else {root.setPadding(bars.left,bars.top,bars.right,bars.bottom);topChrome.setPadding(dp(6),0,dp(6),0);}
+            if(landscape){
+                topChrome.setPadding(bars.left+dp(16),bars.top+dp(6),bars.right+dp(16),dp(12));
+            }else{
+                root.setPadding(bars.left,bars.top,bars.right,bars.bottom);topChrome.setPadding(dp(6),0,dp(6),0);
+            }
             return insets;
         });
-        bottomChrome.addOnLayoutChangeListener((v,l,t,r,b,ol,ot,or,ob)->adjustControllerInsets());
         playerView.setControllerVisibilityListener((PlayerView.ControllerVisibilityListener)visibility->{
             controlsVisible=visibility==View.VISIBLE;
-            if(landscape){topChrome.setVisibility(visibility);bottomChrome.setVisibility(visibility);}adjustControllerInsets();
+            if(landscape)topChrome.setVisibility(visibility);
+            adjustControllerInsets();
         });
         applySystemBars();ViewCompat.requestApplyInsets(landscape?stage:root);
         try {
             NasClient direct = new NasClient(this);
             player = new ExoPlayer.Builder(this).setMediaSourceFactory(new DefaultMediaSourceFactory(() -> new NasDataSource(direct))).build();
             playerView.setPlayer(player); playerView.setKeepScreenOn(true);
-            stage.bind(player,playerView,topChrome,bottomChrome);stage.setVodSeekGestures(true);
-            subtitles = new SubtitleMenu(this, player, subtitle, playerView.getSubtitleView(), settings, this::resumeControls, true);
+            stage.bind(player,playerView,topChrome);stage.setVodSeekGestures(true);
+            subtitles = new SubtitleMenu(this, player, null, playerView.getSubtitleView(), settings, this::resumeControls, true);
             player.setPlaybackSpeed(settings.getFloat("speed", 1));
             player.addListener(new Player.Listener() {
                 @Override public void onPlayerError(PlaybackException error) {
@@ -198,22 +232,19 @@ public final class DirectPlayerActivity extends Activity {
         episodeCaption.setText("第 "+(index+1)+" 集 / 共 "+urls.size()+" 集");
         refreshEpisodeGrid();
         previous.setEnabled(index > 0); next.setEnabled(index + 1 < urls.size());
-        speed.setText((landscape?"":"倍速 ") + settings.getFloat("speed", 1) + "×");
-        if(landscapeCaption!=null)landscapeCaption.setText(episodeCaption.getText());
-        if(!landscape)for(int n=0;n<2;n++) {Button b=(Button)((ViewGroup)speed.getParent()).getChildAt(n);b.setEnabled(n==0?index>0:index+1<urls.size());}
+        if(speed!=null)speed.setText("倍速 " + speedLabel(settings.getFloat("speed", 1)));
+    }
+    /** 1.0 显示成 1×，1.25 保留两位小数。 */
+    private static String speedLabel(float value) {
+        return (Math.abs(value-Math.round(value))<0.01f ? String.valueOf(Math.round(value))
+                : String.format(java.util.Locale.ROOT,"%.2f",value).replaceAll("0$","")) + "×";
     }
     private void loadEpisode() throws Exception {
         String url = urls.get(index); LocalRepository.validate(url);
         updateHeading();
         MediaItem.Builder media = new MediaItem.Builder().setUri(url);
         if (url.toLowerCase(java.util.Locale.ROOT).contains(".m3u8")) media.setMimeType(MimeTypes.APPLICATION_M3U8);
-        segmentSkip.close();
         player.setMediaItem(media.build()); player.seekTo(position); player.prepare(); player.setPlayWhenReady(resume);
-        segmentSkip.bind(player);
-    }
-    private void finishSkippedEpisode() {
-        if (settings.getBoolean("autoNext", true) && index + 1 < urls.size()) switchEpisode(index + 1);
-        else { player.pause(); saveProgress(); status.setText("本集片尾已跳过"); playerView.showController(); }
     }
     private void switchEpisode(int target) {
         if (target < 0 || target >= urls.size() || player == null) return;
@@ -236,26 +267,27 @@ public final class DirectPlayerActivity extends Activity {
     }
     private void holdControls(){playerView.setControllerShowTimeoutMs(0);playerView.showController();}
     private void resumeControls(){if(playerView!=null){playerView.setControllerShowTimeoutMs(3000);playerView.showController();}}
+    /** 字幕避让底部控制条；控制条隐藏时字幕回到画面底部。 */
     private void adjustControllerInsets() {
-        if(playerView==null||bottomChrome==null)return;
+        if(playerView==null)return;
         View timeline=playerView.findViewById(R.id.player_timeline);
-        if(timeline!=null){FrameLayout.LayoutParams p=(FrameLayout.LayoutParams)timeline.getLayoutParams();int margin=landscape&&controlsVisible?bottomChrome.getHeight():0;if(p.bottomMargin!=margin){p.bottomMargin=margin;timeline.setLayoutParams(p);}}
-        View shade=playerView.findViewById(R.id.player_lower_shade);
-        if(shade!=null){ViewGroup.LayoutParams p=shade.getLayoutParams();int height=landscape?Math.max(dp(160),bottomChrome.getHeight()+(timeline==null?0:timeline.getHeight())+dp(60)):dp(90);if(p.height!=height){p.height=height;shade.setLayoutParams(p);}}
-        if(playerView.getSubtitleView()!=null&&playerView.getSubtitleView().getLayoutParams() instanceof FrameLayout.LayoutParams){
-            FrameLayout.LayoutParams p=(FrameLayout.LayoutParams)playerView.getSubtitleView().getLayoutParams();int margin=controlsVisible?(landscape?bottomChrome.getHeight()+dp(60):dp(48)):0;
-            if(p.bottomMargin!=margin){p.bottomMargin=margin;playerView.getSubtitleView().setLayoutParams(p);}
+        int bar=timeline!=null&&timeline.getHeight()>0?timeline.getHeight()+dp(8):dp(120);
+        View subtitles=playerView.getSubtitleView();
+        if(subtitles!=null&&subtitles.getLayoutParams() instanceof FrameLayout.LayoutParams){
+            FrameLayout.LayoutParams p=(FrameLayout.LayoutParams)subtitles.getLayoutParams();int margin=controlsVisible?bar:0;
+            if(p.bottomMargin!=margin){p.bottomMargin=margin;subtitles.setLayoutParams(p);}
         }
     }
     private void showMore(){
         holdControls();String[] options={player!=null&&player.getPlayerError()!=null?"重试播放":"从头播放", "自动下一集 · "+(settings.getBoolean("autoNext",true)?"开启":"关闭")};
         dialog=new AlertDialog.Builder(this).setTitle("更多播放设置").setItems(options,(d,which)->{
-            if(which==0&&player!=null){if(player.getPlayerError()!=null)player.prepare();else player.seekTo(0);player.play();}else if(which==1)autoNext.setChecked(!settings.getBoolean("autoNext",true));
+            if(which==0&&player!=null){if(player.getPlayerError()!=null)player.prepare();else player.seekTo(0);player.play();}
+            else if(which==1){boolean on=!settings.getBoolean("autoNext",true);settings.edit().putBoolean("autoNext",on).apply();if(autoNext!=null)autoNext.setChecked(on);}
         }).setOnDismissListener(d->resumeControls()).show();
     }
     private void chooseEpisode(){
         holdControls();String[] labels=new String[urls.size()];for(int i=0;i<labels.length;i++)labels[i]="第 "+(i+1)+" 集";
-        TextView heading=label("选集\n"+SegmentSkipStore.summary(this,title),16);
+        TextView heading=label("选集\n第 "+(index+1)+" 集 / 共 "+urls.size()+" 集",16);
         heading.setPadding(dp(24),dp(18),dp(24),dp(8));
         dialog=new AlertDialog.Builder(this).setCustomTitle(heading).setSingleChoiceItems(labels,index,(d,which)->{switchEpisode(which);d.dismiss();}).setNegativeButton("关闭",null).setOnDismissListener(d->resumeControls()).show();
     }
@@ -272,13 +304,13 @@ public final class DirectPlayerActivity extends Activity {
     @SuppressWarnings("deprecation") @Override public void onBackPressed(){
         if(playerView!=null&&(controlsVisible||playerView.isControllerFullyVisible())){
             playerView.hideController();controlsVisible=false;
-            if(landscape){topChrome.setVisibility(View.GONE);bottomChrome.setVisibility(View.GONE);}return;
+            if(landscape)topChrome.setVisibility(View.GONE);return;
         }
         if(entryOrientation==Configuration.ORIENTATION_PORTRAIT && getResources().getConfiguration().orientation==Configuration.ORIENTATION_LANDSCAPE && getRequestedOrientation()!=ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED)setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
         else super.onBackPressed();
     }
     private void saveProgress() {
-        if (player != null) history.save(source, item, title, index, segmentSkip != null && segmentSkip.isCompleted() ? player.getDuration() : player.getCurrentPosition(), player.getDuration());
+        if (player != null) history.save(source, item, title, index, player.getCurrentPosition(), player.getDuration());
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putFloat("windowBrightness",getWindow().getAttributes().screenBrightness);
@@ -290,7 +322,6 @@ public final class DirectPlayerActivity extends Activity {
     }
     @Override protected void onPause() { saveProgress(); super.onPause(); }
     @Override protected void onStop() {
-        if(segmentSkip!=null)segmentSkip.close();
         if(stage!=null)stage.release();
         main.removeCallbacks(checkpoint); if (dialog != null) dialog.dismiss(); if (subtitles != null) subtitles.close();
         if (player != null) { saveProgress(); position = player.getCurrentPosition(); resume = player.getPlayWhenReady(); player.release(); player = null; }

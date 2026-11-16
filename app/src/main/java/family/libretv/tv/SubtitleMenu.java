@@ -76,8 +76,10 @@ final class SubtitleMenu {
         else if (choices.isEmpty()) text=player.getPlaybackState()==Player.STATE_BUFFERING || player.getPlaybackState()==Player.STATE_IDLE ? "识别中" : "无可选字幕";
         else if (!hasSupported()) text="格式不支持";
         else text="自动";
-        button.setText(compact ? "字幕" : "字幕："+text);
-        button.setContentDescription("字幕："+text);
+        if (button != null) {
+            button.setText(compact ? "字幕" : "字幕："+text);
+            button.setContentDescription("字幕："+text);
+        }
     }
     private boolean hasSupported() { for(Choice choice:choices) if(choice.supported)return true;return false; }
     boolean isShowing() { return dialog!=null && dialog.isShowing(); }

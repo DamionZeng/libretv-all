@@ -12,16 +12,16 @@ import org.json.JSONObject;
 
 /** Shared native presentation; no data, navigation or playback state lives here. */
 final class PiankeUi {
-    static final int BACKGROUND=0xff101723,PANEL=0xff192535,PINK=0xfff15b9b,SECONDARY=0xffa9b8c9;
+    static final int BACKGROUND=0xff0e0f11,PANEL=0xff16181b,ACCENT=0xffe8a33d,SECONDARY=0xffa8aeb6;
     static final String SLOGAN="光落下，故事开始。";
     static int dp(Context c,int n){return Math.round(n*c.getResources().getDisplayMetrics().density);}
     static GradientDrawable surface(Context c,int color,int radius){GradientDrawable d=new GradientDrawable();d.setColor(color);d.setCornerRadius(dp(c,radius));return d;}
     static StateListDrawable focus(Context c,boolean primary){
         StateListDrawable states=new StateListDrawable();
-        GradientDrawable focused=surface(c,primary?PINK:0xff304052,12);focused.setStroke(dp(c,2),0xfff5f7fa);
+        GradientDrawable focused=surface(c,primary?ACCENT:0xff1e2126,12);focused.setStroke(dp(c,2),0xfff5f7fa);
         states.addState(new int[]{android.R.attr.state_focused},focused);
-        states.addState(new int[]{android.R.attr.state_pressed},surface(c,0xff493044,12));
-        states.addState(new int[]{},surface(c,primary?PINK:PANEL,12));return states;
+        states.addState(new int[]{android.R.attr.state_pressed},surface(c,0xff2b2418,12));
+        states.addState(new int[]{},surface(c,primary?ACCENT:PANEL,12));return states;
     }
     static TextView text(Context c,String value,int size,boolean bold){TextView t=new TextView(c);t.setText(value);t.setTextSize(size);t.setTextColor(bold?0xfff1f5fa:SECONDARY);if(bold)t.setTypeface(null,Typeface.BOLD);return t;}
     static ImageView brand(Context c,int width,int height){ImageView v=new ImageView(c);v.setImageResource(R.drawable.spark_mark);v.setScaleType(ImageView.ScaleType.FIT_CENTER);v.setContentDescription("星光影院");v.setBackground(surface(c,BACKGROUND,12));v.setClipToOutline(true);v.setLayoutParams(new LinearLayout.LayoutParams(dp(c,Math.min(width,height)),dp(c,Math.min(width,height))));return v;}
@@ -29,7 +29,7 @@ final class PiankeUi {
         if(saved==null||saved.optLong("duration")<=0)return;
         Context c=parent.getContext();ProgressBar bar=new ProgressBar(c,null,android.R.attr.progressBarStyleHorizontal);bar.setMax(1000);
         bar.setProgress((int)Math.min(1000,Math.max(0,(double)saved.optLong("position")/saved.optLong("duration")*1000)));
-        bar.setProgressTintList(ColorStateList.valueOf(PINK));bar.setProgressBackgroundTintList(ColorStateList.valueOf(0xff354559));
+        bar.setProgressTintList(ColorStateList.valueOf(ACCENT));bar.setProgressBackgroundTintList(ColorStateList.valueOf(0xff2a2e35));
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(c,4));p.topMargin=dp(c,8);p.bottomMargin=dp(c,6);parent.addView(bar,p);
     }
     static String position(JSONObject saved){

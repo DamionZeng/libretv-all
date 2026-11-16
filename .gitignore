@@ -48,3 +48,7 @@ scripts/fixtures/*.ts
 
 # Local social-media drafts and raw screenshots; publish only explicit Release assets.
 /promo/
+.screenshots
+.tmp
+.workbuddy
+
