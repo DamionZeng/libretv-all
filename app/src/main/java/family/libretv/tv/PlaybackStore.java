@@ -77,6 +77,10 @@ final class PlaybackStore {
         }
     }
     void save(JSONObject source, JSONObject item, String title, int index, long position, long duration) {
+        save(source, item, title, index, position, duration, null);
+    }
+    /** episode 为集名（综艺是更新日期），列表和详情就能显示日期而不是"第 N 集"。 */
+    void save(JSONObject source, JSONObject item, String title, int index, long position, long duration, String episode) {
         if (source == null || item == null || item.optString("vodId").isEmpty() || index < 0 || position < 0 || (position == 0 && duration <= 0)) return;
         synchronized (LOCK) {
             try {
@@ -85,6 +89,7 @@ final class PlaybackStore {
                 JSONObject entry = new JSONObject().put("id", id).put("source", source).put("item", clean)
                         .put("title", title).put("index", index).put("position", position)
                         .put("duration", Math.max(0, duration)).put("updatedAt", System.currentTimeMillis());
+                if (episode != null && !episode.trim().isEmpty()) entry.put("episode", episode.trim());
                 JSONArray next = new JSONArray().put(entry), old = all();
                 for (int i = 0; i < old.length() && next.length() < 50; i++)
                     if (!id.equals(old.getJSONObject(i).optString("id"))) next.put(old.getJSONObject(i));

@@ -46,6 +46,8 @@ class PhoneActivity : Activity() {
     private var sources = JSONArray()
     private var results = JSONArray()
     private var episodes = JSONArray()
+    /** 播放串里的集名，综艺通常是更新日期；缺失时回退到"第 N 集"。 */
+    private var episodeNames = JSONArray()
     private var selected = JSONObject()
     private var source = JSONObject()
     private var title = ""
@@ -891,7 +893,8 @@ class PhoneActivity : Activity() {
         val recent = PlaybackStore(this@PhoneActivity).all().optJSONObject(0)
         if(recent != null) {
             val watching=section("继续观看")
-            button("${recent.optString("title")} · 第 ${recent.optInt("index")+1} 集", watching, true) {
+            val episode=recent.optString("episode").takeIf {it.isNotBlank() && it!="null"} ?: "第 ${recent.optInt("index")+1} 集"
+            button("${recent.optString("title")} · $episode", watching, true) {
                 detail(JSONObject(recent.getJSONObject("item").toString()).put("favoriteSource",recent.getJSONObject("source")))
             }
         }
@@ -1191,6 +1194,7 @@ class PhoneActivity : Activity() {
                 .firstOrNull { it.optString("key") == item.optString("sourceKey") } ?: throw IllegalArgumentException("来源已失效，请重新搜索")
             val result = request("/api/detail?id=${NasClient.encode(item.optString("vodId"))}&source=${NasClient.encode(source.toString())}")
             episodes = result.optJSONArray("episodes") ?: JSONArray()
+            episodeNames = result.optJSONArray("episodeNames") ?: JSONArray()
             require(episodes.length()>0) { "暂无可播放剧集" }
             detailInfo = result.optJSONObject("videoInfo") ?: JSONObject()
             selected = item; title = detailInfo.optString("title",item.optString("name"))
@@ -1202,6 +1206,11 @@ class PhoneActivity : Activity() {
                 else notice.text = "来源剧集数量已变化，请重新选集"
             }
         }
+    }
+    /** 与 TV 端一致：综艺的播放串里集名是更新日期，优先显示集名，缺失时回退到集数。 */
+    private fun episodeLabel(index: Int): String {
+        val name = episodeNames.optString(index, "").trim()
+        return if(name.isEmpty() || name == "null") "第 ${index + 1} 集" else name
     }
     private fun details() {
         screen("detail", "影片详情")
@@ -1228,8 +1237,8 @@ class PhoneActivity : Activity() {
         info.addView(castLine)
         val saved=PlaybackStore(this@PhoneActivity).find(source,selected)
         val resumeIndex=saved?.optInt("index")?.takeIf {it in 0 until episodes.length()} ?: 0
-        if(saved!=null) {info.addView(text(PiankeUi.position(saved),14f));PiankeUi.progress(info,saved)}
-        button(if(saved==null) "开始观看" else "继续播放 · 第 ${resumeIndex+1} 集",info,true) {playLocal(resumeIndex)}
+        if(saved!=null) {info.addView(text(PiankeUi.position(saved,episodeLabel(saved.optInt("index"))),14f));PiankeUi.progress(info,saved)}
+        button(if(saved==null) "开始观看" else "继续播放 · ${episodeLabel(resumeIndex)}",info,true) {playLocal(resumeIndex)}
         val secondary=buttonRow(info)
         val listed = PlaybackStore(this@PhoneActivity).contains(source,selected)
         rowButton(secondary,if(listed) "移出片单" else "加入片单") {
@@ -1270,18 +1279,22 @@ class PhoneActivity : Activity() {
         }
         val box = section("选择剧集 · 共 ${episodes.length()} 集",episodeParent)
         box.addView(text(SegmentSkipStore.summary(this,title),13f).apply { setTextColor(accentColor) })
+        val labels = (0 until episodes.length()).map { episodeLabel(it) }
+        // 综艺的集名是更新日期，比“第 3 集”长很多：按最长标签放宽每格宽度，避免全部被截断。
+        val wideLabels = labels.any { it.length > 6 }
+        val chipDp = if(wideLabels) 100f else 72f
+        val availableDp = if(twoTouchColumns) touchContentWidthDp*.52f-32f else (touchContentWidthDp-28).toFloat()
         val columns = if(resources.configuration.fontScale > 1.3f) 3
-            else if(twoTouchColumns) ((touchContentWidthDp*.52f-32)/72).toInt().coerceIn(4,7)
-            else ((touchContentWidthDp-28)/72).toInt().coerceIn(3,6)
+            else (availableDp/chipDp).toInt().coerceIn(if(wideLabels) 2 else 3, if(twoTouchColumns) 7 else 6)
         for(start in 0 until episodes.length() step columns) {
             val row = buttonRow(box)
-            for(i in start until minOf(start + columns, episodes.length())) rowButton(row, "第 ${i+1} 集") {
-                AlertDialog.Builder(this).setCustomTitle(text("第 ${i+1} 集\n${SegmentSkipStore.summary(this,title)}",16f).apply { setPadding(dp(24),dp(18),dp(24),dp(8)) }).setItems(arrayOf("手机播放", "投屏到电视")) { _, which ->
+            for(i in start until minOf(start + columns, episodes.length())) rowButton(row, labels[i]) {
+                AlertDialog.Builder(this).setCustomTitle(text("${labels[i]}\n${SegmentSkipStore.summary(this,title)}",16f).apply { setPadding(dp(24),dp(18),dp(24),dp(8)) }).setItems(arrayOf("手机播放", "投屏到电视")) { _, which ->
                     if(which==0) playLocal(i)
                     else if(device == null) chooseDevice { cast(i) } else cast(i)
                 }.show()
             }.apply {
-                textSize = 14f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                textSize = if(wideLabels) 12f else 14f; maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
                 if(saved!=null && i==resumeIndex) {background=surface(accentColor,12);setTextColor(backgroundColor)}
             }
             repeat(maxOf(0, start + columns - episodes.length())) { row.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f)) }
@@ -1376,6 +1389,7 @@ class PhoneActivity : Activity() {
             source=target
             val result=request("/api/detail?id=${NasClient.encode(item.optString("vodId"))}&source=${NasClient.encode(target.toString())}")
             episodes=result.optJSONArray("episodes") ?: JSONArray()
+            episodeNames=result.optJSONArray("episodeNames") ?: JSONArray()
             require(episodes.length()>0) {"该来源没有可播放集数"}
             detailInfo=result.optJSONObject("videoInfo") ?: JSONObject()
             selected=item;title=detailInfo.optString("title",item.optString("name"))
@@ -1399,8 +1413,11 @@ class PhoneActivity : Activity() {
     private fun playLocal(index: Int) {
         val urls=(0 until episodes.length()).map { episodes.getString(it) }
         if(urls.sumOf { it.length } > 300000) { notice.text="剧集地址过长，请换一个来源"; return }
+        // 把集名一起带进播放页，综艺的播放页与选集面板同样显示日期。
+        val names=(0 until episodes.length()).map { episodeLabel(it) }
         startActivity(android.content.Intent(this,DirectPlayerActivity::class.java)
-            .putStringArrayListExtra("episodes",ArrayList(urls)).putExtra("index",index).putExtra("title",title)
+            .putStringArrayListExtra("episodes",ArrayList(urls)).putStringArrayListExtra("episodeNames",ArrayList(names))
+            .putExtra("index",index).putExtra("title",title)
             .putExtra("source",source.toString()).putExtra("item",selected.toString()))
     }
     private fun watchingRow(entry: JSONObject, saved: JSONObject?, action: () -> Unit, menu: (() -> Unit)? = null) {

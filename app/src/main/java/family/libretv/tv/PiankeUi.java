@@ -33,9 +33,15 @@ final class PiankeUi {
         LinearLayout.LayoutParams p=new LinearLayout.LayoutParams(-1,dp(c,4));p.topMargin=dp(c,8);p.bottomMargin=dp(c,6);parent.addView(bar,p);
     }
     static String position(JSONObject saved){
+        return position(saved,saved==null?null:saved.optString("episode"));
+    }
+    /** 传入集名（综艺为更新日期）时用它替代“第 N 集”；没有集名时回退。 */
+    static String position(JSONObject saved,String label){
         if(saved==null||!saved.has("position"))return "尚未播放";
         long seconds=Math.max(0,saved.optLong("position"))/1000;
-        return "第 "+(saved.optInt("index")+1)+" 集 · 已看 "+(seconds/60)+"分"+(seconds%60)+"秒";
+        String trimmed=label==null?"":label.trim();
+        String episode=trimmed.isEmpty()||"null".equals(trimmed)?"第 "+(saved.optInt("index")+1)+" 集":trimmed;
+        return episode+" · 已看 "+(seconds/60)+"分"+(seconds%60)+"秒";
     }
     static Button entry(LinearLayout parent,String title,String subtitle,Runnable action){
         Context c=parent.getContext();Button b=new Button(c);b.setAllCaps(false);b.setText(subtitle.isEmpty()?title+"    ›":title+"    ›\n"+subtitle);

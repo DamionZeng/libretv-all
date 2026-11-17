@@ -1837,7 +1837,7 @@ public final class MainActivity extends Activity {
         releasePlayer();preparePlayback(target,false);
     }
     private void saveTvProgress() {
-        if(player!=null)new PlaybackStore(this).save(detailSource,selected,title,episodeIndex,segmentSkip != null && segmentSkip.isCompleted() ? player.getDuration() : player.getCurrentPosition(),player.getDuration());
+        if(player!=null)new PlaybackStore(this).save(detailSource,selected,title,episodeIndex,segmentSkip != null && segmentSkip.isCompleted() ? player.getDuration() : player.getCurrentPosition(),player.getDuration(),episodeLabel(episodeIndex));
     }
     private void releasePlayer() {
         if(segmentSkip!=null)segmentSkip.close();

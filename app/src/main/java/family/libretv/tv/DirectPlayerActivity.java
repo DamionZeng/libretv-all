@@ -42,6 +42,8 @@ public final class DirectPlayerActivity extends Activity {
     private boolean resume = true;
     private int index;
     private ArrayList<String> urls;
+    /** 与详情页一致：综艺的集名是更新日期，优先显示集名。 */
+    private ArrayList<String> episodeNames;
     private JSONObject source, item;
     private String title;
     private TextView status, episodeCaption;
@@ -71,6 +73,7 @@ public final class DirectPlayerActivity extends Activity {
         history = new PlaybackStore(this);
         settings = getSharedPreferences("standalone-player", 0);
         urls = getIntent().getStringArrayListExtra("episodes");
+        episodeNames = getIntent().getStringArrayListExtra("episodeNames");
         if (urls == null || urls.isEmpty()) urls = new ArrayList<>(Arrays.asList(getIntent().getStringExtra("url")));
         index = Math.max(0, Math.min(urls.size() - 1, getIntent().getIntExtra("index", 0)));
         title = getIntent().getStringExtra("title");
@@ -218,7 +221,7 @@ public final class DirectPlayerActivity extends Activity {
                     if (state == Player.STATE_ENDED) {
                         saveProgress();
                         if (settings.getBoolean("autoNext",true) && index + 1 < urls.size()) switchEpisode(index + 1);
-                        else {status.setText(title + " · 第 " + (index + 1) + " 集已播放完");playerView.showController();}
+                        else {status.setText(title + " · " + episodeLabel(index) + " 已播放完");playerView.showController();}
                     }
                 }
             });
@@ -227,9 +230,15 @@ public final class DirectPlayerActivity extends Activity {
             main.postDelayed(checkpoint, 5000);
         } catch (Exception e) { status.setText("无法播放：" + e.getMessage()); }
     }
+    /** 与 TV、详情页一致：综艺的集名是更新日期，优先显示集名，缺失时回退到集数。 */
+    private String episodeLabel(int i) {
+        String name = episodeNames == null || i < 0 || i >= episodeNames.size() ? "" : episodeNames.get(i);
+        name = name == null ? "" : name.trim();
+        return name.isEmpty() || "null".equals(name) ? "第 " + (i + 1) + " 集" : name;
+    }
     private void updateHeading() {
         status.setText(title);
-        episodeCaption.setText("第 "+(index+1)+" 集 / 共 "+urls.size()+" 集");
+        episodeCaption.setText(episodeLabel(index) + " / 共 " + urls.size() + " 集");
         refreshEpisodeGrid();
         previous.setEnabled(index > 0); next.setEnabled(index + 1 < urls.size());
         if(speed!=null)speed.setText("倍速 " + speedLabel(settings.getFloat("speed", 1)));
@@ -286,8 +295,8 @@ public final class DirectPlayerActivity extends Activity {
         }).setOnDismissListener(d->resumeControls()).show();
     }
     private void chooseEpisode(){
-        holdControls();String[] labels=new String[urls.size()];for(int i=0;i<labels.length;i++)labels[i]="第 "+(i+1)+" 集";
-        TextView heading=label("选集\n第 "+(index+1)+" 集 / 共 "+urls.size()+" 集",16);
+        holdControls();String[] labels=new String[urls.size()];for(int i=0;i<labels.length;i++)labels[i]=episodeLabel(i);
+        TextView heading=label("选集\n"+episodeLabel(index)+" / 共 "+urls.size()+" 集",16);
         heading.setPadding(dp(24),dp(18),dp(24),dp(8));
         dialog=new AlertDialog.Builder(this).setCustomTitle(heading).setSingleChoiceItems(labels,index,(d,which)->{switchEpisode(which);d.dismiss();}).setNegativeButton("关闭",null).setOnDismissListener(d->resumeControls()).show();
     }
@@ -295,7 +304,11 @@ public final class DirectPlayerActivity extends Activity {
         if(episodeGrid==null)return;episodeGrid.removeAllViews();int columns=getResources().getConfiguration().fontScale>1.3f?3:4;
         for(int i=0;i<urls.size();i+=columns){LinearLayout row=new LinearLayout(this);episodeGrid.addView(row);for(int j=0;j<columns;j++){
             int target=i+j;if(target>=urls.size()){row.addView(new View(this),new LinearLayout.LayoutParams(0,dp(48),1));continue;}
-            Button chip=PlayerStyle.action(this,String.format(java.util.Locale.ROOT,"第%02d集",target+1),"",false);chip.setCompoundDrawables(null,null,null,null);chip.setSelected(target==index);
+            String label=episodeLabel(target);
+            Button chip=PlayerStyle.action(this,label,"",false);
+            // action() 会给带文字的按钮加 24dp 空图标占位，文字会被顶到底部，这里清掉。
+            chip.setCompoundDrawables(null,null,null,null);chip.setCompoundDrawablePadding(0);
+            chip.setTextSize(label.length()>6?12:13);chip.setPadding(dp(4),0,dp(4),0);chip.setSelected(target==index);
             GradientDrawable idle=PlayerStyle.surface(0xff16181b,10,this);idle.setStroke(dp(1),0xff2a2e35);android.graphics.drawable.StateListDrawable bg=new android.graphics.drawable.StateListDrawable();GradientDrawable picked=PlayerStyle.surface(0x1fe8a33d,10,this);picked.setStroke(dp(1),0x80e8a33d);bg.addState(new int[]{android.R.attr.state_selected},picked);bg.addState(new int[]{},idle);chip.setBackground(bg);
             LinearLayout.LayoutParams cp=new LinearLayout.LayoutParams(0,dp(44),1);cp.setMargins(0,dp(4),dp(j==columns-1?0:6),dp(4));row.addView(chip,cp);chip.setOnClickListener(v->switchEpisode(target));
         }}
@@ -310,7 +323,7 @@ public final class DirectPlayerActivity extends Activity {
         else super.onBackPressed();
     }
     private void saveProgress() {
-        if (player != null) history.save(source, item, title, index, player.getCurrentPosition(), player.getDuration());
+        if (player != null) history.save(source, item, title, index, player.getCurrentPosition(), player.getDuration(), episodeLabel(index));
     }
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putFloat("windowBrightness",getWindow().getAttributes().screenBrightness);
